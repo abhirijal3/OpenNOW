@@ -385,6 +385,15 @@ unsafe extern "C-unwind" fn decompression_callback(
         return;
     };
     let context = unsafe { context.as_ref() };
+    let traced = opennow_streamer_protocol::frame_trace::enabled();
+    let pts_value = { presentation_time_stamp.value };
+    if traced {
+        let pts_timescale = { presentation_time_stamp.timescale };
+        opennow_streamer_protocol::frame_trace::emit(format!(
+            "VD,{},{pts_value},{pts_timescale},{status}",
+            opennow_streamer_protocol::frame_trace::now_us(),
+        ));
+    }
     if status == 0 {
         if let Some(image_buffer) = NonNull::new(image_buffer) {
             let image = unsafe { CFRetained::retain(image_buffer) };
@@ -426,6 +435,12 @@ unsafe extern "C-unwind" fn decompression_callback(
                 .fetch_add(1, Ordering::Relaxed);
             context.failures.video_decode_succeeded();
             if context.output.publish(frame) {
+                if traced {
+                    opennow_streamer_protocol::frame_trace::emit(format!(
+                        "VR,{},{pts_value}",
+                        opennow_streamer_protocol::frame_trace::now_us(),
+                    ));
+                }
                 context
                     .counters
                     .video_frames_dropped

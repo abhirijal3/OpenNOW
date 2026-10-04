@@ -645,6 +645,13 @@ impl Engine {
     fn start(&mut self, command: Command) -> Result<Vec<Value>, Value> {
         let mut context = parse_context(command.context, &command.id)?;
         validate_context(&context, &command.id)?;
+        if let Some(path) = opennow_streamer_protocol::frame_trace::start_session(&command.id) {
+            opennow_streamer_protocol::log::log_line(
+                "INFO",
+                "frame-trace",
+                &format!("writing {}", path.display()),
+            );
+        }
         let audio_device =
             opennow_streamer_protocol::AudioOutputDevice::from_settings(&context.settings)
                 .map_err(|message| error(Some(&command.id), "invalid-context", message))?;

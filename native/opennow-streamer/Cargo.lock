@@ -1750,6 +1750,7 @@ dependencies = [
  "objc2-metal",
  "objc2-quartz-core",
  "objc2-video-toolbox",
+ "opennow-streamer-protocol",
  "opus",
  "thiserror 2.0.18",
 ]

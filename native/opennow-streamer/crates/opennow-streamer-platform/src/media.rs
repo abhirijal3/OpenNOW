@@ -4267,6 +4267,14 @@ fn run_macos_av1_video(
 }
 
 fn report_video_frame_accepted(shared: &SharedPipeline, frame: &EncodedFrame) {
+    if opennow_streamer_protocol::frame_trace::enabled() {
+        opennow_streamer_protocol::frame_trace::emit(format!(
+            "VS,{},{},{}",
+            opennow_streamer_protocol::frame_trace::now_us(),
+            frame.frame_index.map_or(-1, i64::from),
+            frame.timestamp
+        ));
+    }
     let _ = shared.feedback.send(MediaFeedback::VideoFrameAccepted {
         frame_index: frame.frame_index,
         timestamp: frame.timestamp,
@@ -4347,6 +4355,13 @@ fn run_macos_audio(shared: Arc<SharedPipeline>) {
 
 #[cfg(target_os = "macos")]
 fn mark_macos_video_desynced(shared: &SharedPipeline, mid: &str, reason: &str) {
+    if opennow_streamer_protocol::frame_trace::enabled() {
+        opennow_streamer_protocol::frame_trace::emit(format!(
+            "VX,{},{}",
+            opennow_streamer_protocol::frame_trace::now_us(),
+            opennow_streamer_protocol::frame_trace::clean(reason)
+        ));
+    }
     shared.video_desynced.store(true, Ordering::Release);
     if !shared.keyframe_requested.swap(true, Ordering::AcqRel) {
         let _ = shared.feedback.send(MediaFeedback::RequestKeyframe {

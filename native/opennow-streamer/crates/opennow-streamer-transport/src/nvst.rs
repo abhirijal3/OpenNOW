@@ -39,6 +39,7 @@ use str0m::stats::CandidatePairStats;
 use str0m::{Candidate, Event, IceCreds, Input, Output, Rtc, RtcConfig};
 
 use super::frame_stage_timing::FrameStageTimingsAccumulator;
+use opennow_streamer_protocol::frame_trace;
 use super::nvst_bandwidth::{BandwidthEstimator, PacketBandwidthSample};
 use super::nvst_control::{
     DEFAULT_FRAME_TIME_US, FRAME_ACK_PAYLOAD_LEN, FRAME_PACING_INTERVAL, MAX_NACK_PACKET_COUNT,
@@ -839,6 +840,12 @@ impl NvstFeedbackState {
     fn request_nack(&self, first_missing_index: u64, last_missing_index: u64, now: Instant) {
         if first_missing_index > last_missing_index {
             return;
+        }
+        if frame_trace::enabled() {
+            frame_trace::emit(format!(
+                "NQ,{},{first_missing_index},{last_missing_index}",
+                frame_trace::us_at(now)
+            ));
         }
         let mut pending = self
             .pending_nacks
@@ -2866,6 +2873,14 @@ fn send_pending_nack(
     } else {
         channels.send_rtcp(rtc, &build_rtcp_nack(sender_ssrc, media_ssrc, first, last))
     };
+    if frame_trace::enabled() {
+        frame_trace::emit(format!(
+            "NS,{},{first},{last},{},{}",
+            frame_trace::us_at(now),
+            u8::from(admitted),
+            retry_rtt.map_or(-1.0, |rtt| rtt.as_secs_f64() * 1000.0)
+        ));
+    }
     if admitted {
         let format = if mjolnir {
             "private-v2"
@@ -3023,6 +3038,38 @@ impl NvVideoPacket {
     fn is_end_of_frame(self) -> bool {
         self.flags & FLAG_EOF != 0 && self.fec_current_block == self.fec_last_block
     }
+}
+
+/// One `P` trace line per authenticated video packet, read straight from the GS
+/// extension so it costs no extra parsing state: arrival time, extended RTP
+/// index, frame, stream packet index, flags, FEC block/percent/shard/data count,
+/// plaintext length, and whether it answered a NACK or arrived out of order.
+fn trace_packet(packet: &RtpPacket, now: Instant, retransmitted: bool, reordered: bool) {
+    let (frame, spi, flags, block, last_block, percent, shard, data) =
+        packet.header.gs_video_header.map_or((0, 0, 0, 0, 0, 0, 0, 0), |extension| {
+            let word = |range: std::ops::Range<usize>| {
+                u32::from_le_bytes(extension[range].try_into().expect("GS header length"))
+            };
+            let fec_word = word(12..16);
+            (
+                word(4..8),
+                (word(0..4) >> 8) & STREAM_PACKET_INDEX_MASK,
+                word(8..12) & 0x0f,
+                (extension[11] >> 4) & 0x03,
+                (extension[11] >> 6) & 0x03,
+                (fec_word >> 4) & 0xff,
+                (fec_word >> 12) & 0x3ff,
+                (fec_word >> 22) & 0x3ff,
+            )
+        });
+    frame_trace::emit(format!(
+        "P,{},{},{frame},{spi},{flags},{block},{last_block},{percent},{shard},{data},{},{},{}",
+        frame_trace::us_at(now),
+        packet.index,
+        packet.plaintext.len(),
+        u8::from(retransmitted),
+        u8::from(reordered),
+    ));
 }
 
 struct VideoAccessUnitAssembler {
@@ -4409,6 +4456,9 @@ impl NvstVideoReceiver {
         if retransmitted {
             self.recovered_retransmissions += 1;
         }
+        if frame_trace::enabled() {
+            trace_packet(&packet, now, retransmitted, reordered);
+        }
         let video = (!retransmitted && !reordered)
             .then(|| packet.header.payload(&packet.plaintext).ok())
             .flatten()
@@ -4453,12 +4503,29 @@ impl NvstVideoReceiver {
                 .request_nack(first_missing_index, last_missing_index, now);
         }
         if let Some(reason) = result.dropped {
+            if frame_trace::enabled() {
+                frame_trace::emit(format!(
+                    "X,{},{}",
+                    frame_trace::us_at(now),
+                    frame_trace::clean(&format!("{reason:?}"))
+                ));
+            }
             if matches!(reason, NvstDropReason::StaleRtpPacket { .. }) {
                 self.stale_packets += 1;
             }
             events.push(NvstReceiveEvent::Dropped(reason));
         }
+        if frame_trace::enabled() && result.fec_repaired > 0 {
+            frame_trace::emit(format!("FR,{},{}", frame_trace::us_at(now), result.fec_repaired));
+        }
         if let Some(recovery) = result.recovery {
+            if frame_trace::enabled() {
+                frame_trace::emit(format!(
+                    "G,{},{}",
+                    frame_trace::us_at(now),
+                    frame_trace::clean(&format!("{recovery:?}"))
+                ));
+            }
             self.packet_gap_recoveries += 1;
             self.invalidate_picture();
             self.config.feedback.clear_nacks();
@@ -4487,6 +4554,15 @@ impl NvstVideoReceiver {
             };
             if packet.origin == RtpPacketOrigin::RecoveredData {
                 nv_packet.is_fec = false;
+                if frame_trace::enabled() {
+                    frame_trace::emit(format!(
+                        "R,{},{},{},{}",
+                        frame_trace::us_at(now),
+                        packet.index,
+                        nv_packet.frame_index,
+                        nv_packet.stream_packet_index
+                    ));
+                }
             }
             if nv_packet.is_fec {
                 self.fec_packets += 1;
@@ -4504,6 +4580,13 @@ impl NvstVideoReceiver {
                 // A new SOF before EOF means the previous reference frame was
                 // incomplete even when RTP sequence numbers were continuous.
                 // Never let the following P-frame look contiguous to the decoder.
+                if frame_trace::enabled() {
+                    frame_trace::emit(format!(
+                        "X,{},FrameDiscontinuity sof-before-eof frame={}",
+                        frame_trace::us_at(now),
+                        nv_packet.frame_index
+                    ));
+                }
                 self.invalidate_picture();
                 self.config.feedback.clear_nacks();
                 events.push(NvstReceiveEvent::Dropped(
@@ -4517,6 +4600,13 @@ impl NvstVideoReceiver {
                     last.wrapping_add(1) & STREAM_PACKET_INDEX_MASK != nv_packet.stream_packet_index
                 })
             {
+                if frame_trace::enabled() {
+                    frame_trace::emit(format!(
+                        "X,{},FrameDiscontinuity packet-gap frame={}",
+                        frame_trace::us_at(now),
+                        nv_packet.frame_index
+                    ));
+                }
                 self.invalidate_picture();
                 events.push(NvstReceiveEvent::Dropped(
                     NvstDropReason::FrameDiscontinuity,
@@ -4530,6 +4620,17 @@ impl NvstVideoReceiver {
             {
                 Ok(Some(mut frame)) => {
                     frame.contiguous = self.next_frame_contiguous;
+                    if frame_trace::enabled() {
+                        frame_trace::emit(format!(
+                            "F,{},{},{},{},{},{}",
+                            frame_trace::us_at(now),
+                            frame.frame_index,
+                            frame.timestamp,
+                            u8::from(frame.keyframe),
+                            u8::from(frame.contiguous),
+                            frame.bytes.len()
+                        ));
+                    }
                     self.next_frame_contiguous = true;
                     self.frames_emitted += 1;
                     if self
@@ -4546,6 +4647,13 @@ impl NvstVideoReceiver {
                 }
                 Ok(None) => {}
                 Err(reason) => {
+                    if frame_trace::enabled() {
+                        frame_trace::emit(format!(
+                            "X,{},{}",
+                            frame_trace::us_at(now),
+                            frame_trace::clean(&format!("assembler {reason:?}"))
+                        ));
+                    }
                     self.invalidate_picture();
                     events.push(NvstReceiveEvent::Dropped(reason));
                 }
@@ -6771,6 +6879,24 @@ fn run_nvst_webrtc_bundle(
                     });
                 }
                 if writable {
+                    if frame_trace::enabled() {
+                        let bandwidth = report.bandwidth;
+                        frame_trace::emit(format!(
+                            "Q,{},{},{},{},{},{},{},{},{},{},{},{:.3}",
+                            frame_trace::us_at(now),
+                            report.sequence,
+                            report.sender_frame_number,
+                            report.loss_per_ten_thousand,
+                            bandwidth.estimate_kbps,
+                            bandwidth.utilization_percent,
+                            bandwidth.queue_delay_us,
+                            bandwidth.jitter_us,
+                            bandwidth.minimum_server_time,
+                            bandwidth.median_server_time,
+                            bandwidth.lossy_frames,
+                            feedback.ping_ms(now).unwrap_or(-1.0)
+                        ));
+                    }
                     control_reports.append_qos(report, &command, now);
                     let _ = control_reports.flush(now, &feedback, |bytes| {
                         channels.send_partial_control(&mut rtc, bytes)
@@ -6885,6 +7011,14 @@ fn run_nvst_webrtc_bundle(
                 });
             last_keyframe_attempt = now;
             keyframe_attempts = keyframe_attempts.saturating_add(1);
+            if frame_trace::enabled() {
+                frame_trace::emit(format!(
+                    "K,{},{},{}",
+                    frame_trace::us_at(now),
+                    u8::from(pli_queued),
+                    u8::from(idr_queued)
+                ));
+            }
             if last_keyframe_attempt_log
                 .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(10))
             {
@@ -7723,6 +7857,12 @@ fn forward_receive_event(
                 return true;
             }
             Err(TransportError::MediaConsumerBackpressured) => {
+                if frame_trace::enabled() {
+                    frame_trace::emit(format!(
+                        "X,{},MediaConsumerBackpressured frame={frame_index}",
+                        frame_trace::us_at(delivered_at)
+                    ));
+                }
                 feedback.retire_undelivered_frame(frame_index);
                 // This is loss AFTER assembly. Preserve it until a frame really
                 // reaches the decoder; requesting an IDR alone leaves dependent

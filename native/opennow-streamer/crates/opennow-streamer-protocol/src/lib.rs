@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+pub mod frame_trace;
 pub mod log;
 pub mod text_input;
 

@@ -1402,6 +1402,14 @@ pub unsafe extern "C" fn opennow_streamer_acquire_latest_frame(
             }
         };
         let frame_info = token.info();
+        if opennow_streamer_protocol::frame_trace::enabled() {
+            opennow_streamer_protocol::frame_trace::emit(format!(
+                "VP,{},{},{}",
+                opennow_streamer_protocol::frame_trace::now_us(),
+                frame_info.presentation_time_ns,
+                frame_info.sequence
+            ));
+        }
         if !FIRST_FRAME_LOGGED.swap(true, Ordering::Relaxed) {
             log::log_line(
                 "INFO",

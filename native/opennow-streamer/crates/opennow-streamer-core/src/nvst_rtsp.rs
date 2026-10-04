@@ -668,6 +668,7 @@ impl PreparedNvstRtspSession {
         let mut announce_headers = self.common_headers.clone();
         announce_headers.push(("Session", self.rtsp_session.clone()));
         announce_headers.push(("Content-Type", "application/sdp".to_owned()));
+        trace_sdp("announce", &self.announce_body);
         let announce = client.request(
             "ANNOUNCE",
             &self.target,
@@ -845,6 +846,41 @@ impl Drop for ActiveNvstRtspSession {
     }
 }
 
+/// Records the negotiated session description in the frame trace, one `SDP`
+/// line per attribute. ICE credentials, DTLS fingerprints and SRTP keying
+/// are left out: the trace is meant to be shared when comparing runs.
+fn trace_sdp(direction: &str, body: &str) {
+    use opennow_streamer_protocol::frame_trace;
+    if !frame_trace::enabled() {
+        return;
+    }
+    for line in body.lines() {
+        let lower = line.to_ascii_lowercase();
+        if [
+            "usernamefragment",
+            "ufrag",
+            "pwd",
+            "password",
+            "fingerprint",
+            "token",
+            "crypto",
+            "srtp",
+            "secret",
+            "a=key",
+        ]
+            .iter()
+            .any(|secret| lower.contains(secret))
+        {
+            continue;
+        }
+        frame_trace::emit(format!(
+            "SDP,{},{direction},{}",
+            frame_trace::now_us(),
+            frame_trace::clean(line)
+        ));
+    }
+}
+
 pub fn prepare_owned_nvst(
     context: &SessionContext,
     bundle: &mut ReservedNvstBundle,
@@ -981,6 +1017,7 @@ fn prepare_on_endpoint(
     describe_headers.push(("x-nv-abtesting", "2".to_owned()));
     let describe = client.request("DESCRIBE", &target, &describe_headers, "")?;
     ensure_rtsp_ok("DESCRIBE", &describe)?;
+    trace_sdp("describe", &describe.body);
     opennow_streamer_protocol::log::log_line(
         "INFO",
         "rtsps",

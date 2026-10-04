@@ -4,6 +4,22 @@ use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 
 use crate::media::EncodedFrame;
+use opennow_streamer_protocol::frame_trace;
+
+/// `VQ` trace line: what the decoder queue did with an arriving frame, and how
+/// many frames it holds afterwards.
+fn trace_push(frame: &EncodedFrame, outcome: &str, depth: usize, dropped: usize) {
+    if frame_trace::enabled() {
+        frame_trace::emit(format!(
+            "VQ,{},{},{},{},{},{outcome},{depth},{dropped}",
+            frame_trace::now_us(),
+            frame.frame_index.map_or(-1, i64::from),
+            frame.timestamp,
+            u8::from(frame.keyframe),
+            u8::from(frame.contiguous),
+        ));
+    }
+}
 
 pub(crate) struct VideoPacket {
     pub frame: EncodedFrame,
@@ -70,6 +86,7 @@ impl VideoQueue {
             {
                 state.waiting_for_keyframe = true;
                 state.request_pending = true;
+                trace_push(&frame, "dropped-full", state.frames.len(), 1);
                 return Ok(VideoPush {
                     dropped: 1,
                     request_keyframe: true,
@@ -80,6 +97,7 @@ impl VideoQueue {
         if state.waiting_for_keyframe && !frame.keyframe {
             let request_keyframe = !state.request_pending;
             state.request_pending = true;
+            trace_push(&frame, "dropped-awaiting-keyframe", state.frames.len(), dropped + 1);
             return Ok(VideoPush {
                 dropped: dropped + 1,
                 request_keyframe,
@@ -93,6 +111,12 @@ impl VideoQueue {
         state.request_pending = false;
         #[cfg(any(windows, test))]
         let generation = state.generation;
+        trace_push(
+            &frame,
+            if dropped > 0 { "queued-after-flush" } else { "queued" },
+            state.frames.len() + 1,
+            dropped,
+        );
         state.frames.push_back(VideoPacket {
             frame,
             #[cfg(any(windows, test))]
@@ -110,6 +134,14 @@ impl VideoQueue {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         loop {
             if let Some(frame) = state.frames.pop_front() {
+                if frame_trace::enabled() {
+                    frame_trace::emit(format!(
+                        "VO,{},{},{}",
+                        frame_trace::now_us(),
+                        frame.frame.frame_index.map_or(-1, i64::from),
+                        state.frames.len()
+                    ));
+                }
                 return Some(frame);
             }
             if state.closed {
