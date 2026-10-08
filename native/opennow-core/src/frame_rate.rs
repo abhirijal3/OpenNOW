@@ -1,6 +1,4 @@
-use serde_json::{Value, json};
-
-pub const SUPPORTED_FRAME_RATES: [i64; 8] = [30, 60, 90, 120, 144, 165, 240, 360];
+use serde_json::Value;
 
 pub fn resolution_ceiling(width: i64, height: i64) -> i64 {
     if width == 1920 && matches!(height, 1080 | 1200) {
@@ -8,18 +6,6 @@ pub fn resolution_ceiling(width: i64, height: i64) -> i64 {
     } else {
         240
     }
-}
-
-fn is_full_hd(width: i64, height: i64) -> bool {
-    resolution_ceiling(width, height) > 240
-}
-
-fn resolution(settings: &Value) -> (i64, i64) {
-    settings["resolution"]
-        .as_str()
-        .and_then(|value| value.split_once(['x', 'X']))
-        .and_then(|(width, height)| Some((width.parse().ok()?, height.parse().ok()?)))
-        .unwrap_or((1920, 1080))
 }
 
 fn hardware_decode_available(settings: &Value, capabilities: &Value) -> bool {
@@ -80,64 +66,15 @@ pub fn request_frame_rate(settings: &Value, params: &Value, width: i64, height: 
     rate
 }
 
-pub fn frame_rate_choices(settings: &Value, capabilities: &Value) -> Value {
-    let (width, height) = resolution(settings);
-    let full_hd = is_full_hd(width, height);
-    let hardware = hardware_decode_available(settings, capabilities);
-    json!(
-        SUPPORTED_FRAME_RATES
-            .into_iter()
-            .map(|value| {
-                let reason = if value <= BASE_FRAME_RATE_CEILING {
-                    None
-                } else if !full_hd {
-                    Some(
-                        "360 FPS is offered at full HD (1920x1080 or 1920x1200) only. Choose a full HD resolution first."
-                            .to_owned(),
-                    )
-                } else if capabilities["videoBackends"].as_array().is_none() {
-                    Some(
-                        "360 FPS needs a confirmed hardware video decoder for the selected codec. This device has not reported one."
-                            .to_owned(),
-                    )
-                } else if !hardware {
-                    Some(
-                        "360 FPS needs a hardware video decoder for the selected codec. This device has none available."
-                            .to_owned(),
-                    )
-                } else {
-                    None
-                };
-                json!({"value":value, "disabled":reason.is_some(), "reason":reason})
-            })
-            .collect::<Vec<_>>()
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn capabilities(backend: &str, codec: &str) -> Value {
         json!({"protocolVersion":7, "videoBackends":[{"backend":backend, "platform":"linux",
             "available":true, "codecs":[{"codec":codec, "available":true,
                 "colorQualities":["8bit_420"]}]}]})
-    }
-
-    fn descriptor(choices: &Value, value: i64) -> Value {
-        choices
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|choice| choice["value"] == value)
-            .cloned()
-            .unwrap()
-    }
-
-    #[test]
-    fn supported_frame_rates_end_at_the_documented_top_tier() {
-        assert_eq!(SUPPORTED_FRAME_RATES, [30, 60, 90, 120, 144, 165, 240, 360]);
-        assert_eq!(SUPPORTED_FRAME_RATES.last(), Some(&360));
     }
 
     #[test]
@@ -162,93 +99,6 @@ mod tests {
                 "{width}x{height} must not request the full-HD-only tier"
             );
         }
-    }
-
-    #[test]
-    fn only_the_top_tier_is_conditional_and_every_rate_reports_a_reason() {
-        let settings =
-            json!({"resolution":"1920x1080", "codec":"h265", "nativeVideoBackend":"auto"});
-        let choices = frame_rate_choices(&settings, &capabilities("vaapi", "h265"));
-        assert_eq!(
-            choices.as_array().unwrap().len(),
-            SUPPORTED_FRAME_RATES.len()
-        );
-        for rate in [30, 60, 90, 120, 144, 165, 240] {
-            let entry = descriptor(&choices, rate);
-            assert_eq!(entry["disabled"], false, "{rate} stays selectable");
-            assert_eq!(entry["reason"], Value::Null, "{rate} needs no reason");
-        }
-        assert_eq!(descriptor(&choices, 360)["disabled"], false);
-
-        let non_full_hd = frame_rate_choices(
-            &json!({"resolution":"2560x1440", "codec":"h265", "nativeVideoBackend":"auto"}),
-            &capabilities("vaapi", "h265"),
-        );
-        let entry = descriptor(&non_full_hd, 360);
-        assert_eq!(entry["disabled"], true);
-        assert!(
-            entry["reason"]
-                .as_str()
-                .unwrap()
-                .contains("full HD (1920x1080 or 1920x1200) only")
-        );
-        assert_eq!(descriptor(&non_full_hd, 240)["disabled"], false);
-    }
-
-    #[test]
-    fn top_tier_requires_a_hardware_decoder_for_the_selected_codec() {
-        let full_hd = json!({"resolution":"1920x1200", "codec":"av1", "nativeVideoBackend":"auto"});
-        let software_only = json!({"videoBackends":[{"backend":"software", "available":true,
-            "codecs":[{"codec":"av1", "available":true}]}]});
-        let entry = descriptor(&frame_rate_choices(&full_hd, &software_only), 360);
-        assert_eq!(entry["disabled"], true);
-        assert!(
-            entry["reason"]
-                .as_str()
-                .unwrap()
-                .contains("needs a hardware video decoder")
-        );
-
-        let mismatched_codec = capabilities("vaapi", "h265");
-        assert_eq!(
-            descriptor(&frame_rate_choices(&full_hd, &mismatched_codec), 360)["disabled"],
-            true,
-            "an unrelated hardware decoder must not unlock the top tier"
-        );
-
-        let explicit_backend =
-            json!({"resolution":"1920x1200", "codec":"h264", "nativeVideoBackend":"cuda"});
-        assert_eq!(
-            descriptor(
-                &frame_rate_choices(&explicit_backend, &capabilities("vaapi", "h264")),
-                360
-            )["disabled"],
-            true,
-            "a backend the preference excludes cannot unlock the top tier"
-        );
-        let nvdec_alias =
-            json!({"resolution":"1920x1200", "codec":"av1", "nativeVideoBackend":"nvdec"});
-        assert_eq!(
-            descriptor(
-                &frame_rate_choices(&nvdec_alias, &capabilities("cuda", "av1")),
-                360
-            )["disabled"],
-            false,
-            "the nvdec alias still matches the CUDA backend"
-        );
-
-        let unavailable = json!({"videoBackends":[{"backend":"vaapi", "available":false,
-            "codecs":[{"codec":"h265", "available":true}]}]});
-        assert_eq!(
-            descriptor(&frame_rate_choices(&full_hd, &unavailable), 360)["disabled"],
-            true,
-            "an unavailable backend cannot unlock the top tier"
-        );
-        assert_eq!(
-            descriptor(&frame_rate_choices(&full_hd, &json!({})), 360)["disabled"],
-            true,
-            "unreported capabilities never unlock the top tier"
-        );
     }
 
     #[test]
@@ -346,19 +196,5 @@ mod tests {
             360,
             "the same hardware profile stays eligible without the software preference"
         );
-    }
-
-    #[test]
-    fn auto_selection_accepts_any_hardware_codec_without_mutating_inputs() {
-        let settings =
-            json!({"resolution":"1920x1080", "codec":"auto", "nativeVideoBackend":"auto"});
-        let original = settings.clone();
-        let choices = frame_rate_choices(&settings, &capabilities("vulkan", "h265"));
-        assert_eq!(descriptor(&choices, 360)["disabled"], false);
-        assert_eq!(settings, original);
-
-        let missing = frame_rate_choices(&settings, &json!({}));
-        assert_eq!(descriptor(&missing, 240)["disabled"], false);
-        assert_eq!(descriptor(&missing, 360)["disabled"], true);
     }
 }

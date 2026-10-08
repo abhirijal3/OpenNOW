@@ -48,21 +48,11 @@ fn settings_events_precede_acknowledgements_and_other_events_keep_their_order() 
         for (key, value, changes) in [
             ("gameLanguage", json!("es_419"), None),
             ("gameLanguage", json!("zh_Hant_TW"), None),
-            ("launchInConsoleMode", json!(true), None),
+            ("codec", json!("h264"), None),
             (
-                "launchInConsoleMode",
-                json!(false),
-                Some(json!({"switchToConsoleOnPad":false})),
-            ),
-            (
-                "themePack",
-                json!("bone"),
-                Some(json!({"appTheme":"light","themeAccentOverride":false})),
-            ),
-            (
-                "microphoneMode",
-                json!("voice-activity"),
-                Some(json!({"microphoneDeviceId":""})),
+                "colorQuality",
+                json!("10bit_444"),
+                Some(json!({"codec":"auto"})),
             ),
         ] {
             let id = request("settings.set", json!({"key":key,"value":value}));

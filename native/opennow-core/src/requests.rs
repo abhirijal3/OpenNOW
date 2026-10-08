@@ -3,11 +3,12 @@ use crate::gfn::ServiceError;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
 
 const MAX_ACTIVE: usize = 8;
 const MAX_BACKGROUND: usize = 4;
+const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Default)]
 struct RequestState {
@@ -58,10 +59,7 @@ impl Cancellation {
 pub struct Requests(Mutex<HashMap<String, (bool, Cancellation)>>);
 impl Requests {
     pub fn admit(self: &Arc<Self>, id: &str, method: &str) -> Option<Permit> {
-        let background = method.starts_with("catalog.")
-            || method.starts_with("artwork.")
-            || method == "network.regions.ping"
-            || method == "queue.servers.list";
+        let background = method == "network.regions.ping";
         let mut active = self.0.lock().expect("request state poisoned");
         if active.contains_key(id)
             || active.len() >= MAX_ACTIVE
@@ -109,6 +107,17 @@ impl Drop for Permit {
 }
 
 thread_local! { static CURRENT: RefCell<Cancellation> = RefCell::default(); }
+pub fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, ServiceError> {
+    loop {
+        check()?;
+        match mutex.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(TryLockError::WouldBlock) => std::thread::sleep(LOCK_POLL_INTERVAL),
+            Err(TryLockError::Poisoned(_)) => panic!("Store request state poisoned"),
+        }
+    }
+}
+
 pub fn current() -> Cancellation {
     CURRENT.with(|token| token.borrow().clone())
 }
@@ -194,19 +203,19 @@ mod tests {
         for id in 0..4 {
             permits.push(
                 requests
-                    .admit(&id.to_string(), "catalog.store.local")
+                    .admit(&id.to_string(), "network.regions.ping")
                     .unwrap(),
             );
         }
         requests.cancel("0");
         assert!(permits[0].token.cancelled());
-        assert!(requests.admit("more", "catalog.store.local").is_none());
+        assert!(requests.admit("more", "network.regions.ping").is_none());
         for id in 4..8 {
             permits.push(requests.admit(&id.to_string(), "session.poll").unwrap());
         }
         assert!(requests.admit("overflow", "session.stop").is_none());
         permits.clear();
-        assert!(requests.admit("new", "catalog.store.local").is_some());
+        assert!(requests.admit("new", "network.regions.ping").is_some());
     }
     #[test]
     fn unknown_cancels_do_not_accumulate_and_scopes_restore() {
@@ -215,7 +224,7 @@ mod tests {
             requests.cancel(&id.to_string());
         }
         assert!(requests.0.lock().unwrap().is_empty());
-        let permit = requests.admit("work", "catalog.store.local").unwrap();
+        let permit = requests.admit("work", "network.regions.ping").unwrap();
         assert!(requests.admit("work", "session.poll").is_none());
         requests.cancel("work");
         scope(permit.token.clone(), || {

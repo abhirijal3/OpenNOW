@@ -6,8 +6,6 @@ fn service(url: &str) -> (GfnService, PathBuf) {
     let (mut service, path) = test_service(url);
     service.endpoints.service_urls = format!("{url}/providers");
     service.endpoints.server_info = Some(format!("{url}/v2/serverInfo"));
-    service.endpoints.graphql = format!("{url}/graphql");
-    service.endpoints.subscription = format!("{url}/subscription");
     let mut state = service.state.lock().unwrap();
     state.session = Some(auth_fixture("account-a"));
     state.generation = 7;
@@ -394,7 +392,7 @@ fn hinted_active_get_fences_cancellation_and_account_changes_before_adoption() {
                 if cancel {
                     requests.cancel("restore");
                 } else {
-                    service.clear_cache();
+                    clear_cache(&service);
                 }
                 release_tx.send(()).unwrap();
                 assert_eq!(
@@ -458,31 +456,18 @@ fn expire_discovery(service: &GfnService) {
     state.providers_retry = None;
 }
 
-fn launch_params(id: &str) -> Value {
-    json!({"appId":id,"variantId":id,"catalogAppId":"launch-fixture",
-        "scope":scoped_result(json!({}), &auth_fixture("account-a"), 7)["scope"]})
+fn clear_cache(service: &GfnService) {
+    let mut state = service.state.lock().unwrap();
+    state.providers.clear();
+    state.providers_expires = None;
+    state.providers_retry = None;
+    state.providers_error = None;
+    state.generation += 1;
 }
 
-fn launch_metadata() -> Vec<(u16, Value)> {
-    vec![
-        (200, json!({"requestStatus":{"serverId":"fixture-vpc"}})),
-        (
-            200,
-            json!({"data":{"apps":{"items":[{"id":"launch-fixture","title":"Launch fixture",
-            "gfn":{"playabilityState":"PLAYABLE"},"variants":[{"id":"123","appStore":"STEAM",
-                "gfn":{"status":"AVAILABLE","library":{"status":"MANUAL","selected":true,"playStatus":"PLAYABLE"}}}]}]}}}),
-        ),
-        (
-            200,
-            json!({"data":{"appStoreDefinitions":[{"store":"STEAM","label":"Steam","features":[],"accountLinkingMetadata":{"isRequired":false}}]}}),
-        ),
-        (200, json!({"data":{"genreDefinitions":[]}})),
-        (200, json!({"data":{"subscriptionDefinitions":[]}})),
-        (
-            200,
-            json!({"data":{"userAccount":{"storesData":[],"subscriptions":[]}}}),
-        ),
-    ]
+fn launch_params(id: &str) -> Value {
+    json!({"appId":id,"variantId":id,"accountLinked":true,"title":"Launch fixture",
+        "scope":scoped_result(json!({}), &auth_fixture("account-a"), 7)["scope"]})
 }
 
 #[test]
@@ -536,12 +521,8 @@ fn owned_ad_reports_preserve_event_fields_without_accepting_foreign_session_rout
 fn reject_concurrent_create_during(discovery: bool) {
     let (entered_tx, entered_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
-    let mut responses = if discovery { vec![] } else { launch_metadata() };
-    responses.push((503, json!({})));
-    let (url, worker) = mock_requests(responses, move |index, request| {
-        if !discovery && index < 6 {
-            return;
-        }
+    let responses = vec![(503, json!({}))];
+    let (url, worker) = mock_requests(responses, move |_, request| {
         if discovery {
             assert!(request.starts_with("GET /providers "));
         } else {
@@ -819,40 +800,6 @@ fn discovery_honors_bounded_retry_after_and_rejects_malformed_json() {
 }
 
 #[test]
-fn library_and_vpc_use_the_same_explicit_proxy_without_direct_fallback() {
-    let (proxy, worker) = mock_requests(
-        vec![
-            (200, json!({"requestStatus":{"serverId":"proxy-vpc"}})),
-            (
-                200,
-                json!({"data":{"apps":{"items":[],"pageInfo":{"hasNextPage":false}}}}),
-            ),
-        ],
-        |index, request| {
-            if index == 0 {
-                assert!(request.starts_with("GET http://metadata.fixture.invalid/v2/serverInfo "));
-            } else {
-                assert!(request.starts_with("POST http://catalog.fixture.invalid/graphql "));
-                assert!(request.contains("proxy-vpc"));
-            }
-            assert!(request.contains("GFNJWT test-access"));
-        },
-    );
-    let (mut service, path) = service("http://127.0.0.1:1");
-    service.endpoints.server_info = Some("http://metadata.fixture.invalid/v2/serverInfo".into());
-    service.endpoints.graphql = "http://catalog.fixture.invalid/graphql".into();
-    let result = service
-        .library_catalog(
-            &json!({}),
-            &json!({"sessionProxyEnabled":true,"sessionProxyUrl":proxy}),
-        )
-        .unwrap();
-    assert_eq!(result["source"], "account-library");
-    worker.join().unwrap();
-    std::fs::remove_dir_all(path).unwrap();
-}
-
-#[test]
 fn advertised_default_provider_does_not_replace_an_explicit_selection() {
     let mut payload = directory("alliance", "alliance.nvidiagrid.net");
     payload["gfnServiceInfo"]["defaultProvider"] = json!("ALLIANCE");
@@ -971,83 +918,6 @@ fn discovery_reconciles_only_matching_provider_and_fences_changed_or_removed_rou
 }
 
 #[test]
-fn server_info_failures_never_dispatch_a_generic_library_query() {
-    for (status, body, expected) in [
-        (403, json!({}), "upstream_error"),
-        (429, json!({}), "upstream_error"),
-        (200, json!({}), "invalid_upstream_response"),
-        (503, json!({}), "upstream_error"),
-    ] {
-        let (url, worker) = mock_requests(vec![(status, body)], |_, request| {
-            assert!(request.starts_with("GET /v2/serverInfo "));
-            assert!(request.contains("GFNJWT test-access"));
-            assert!(!request.contains("GFNPartnerJWT"));
-        });
-        let (service, path) = service(&url);
-        assert_eq!(
-            service
-                .library_catalog(&json!({}), &json!({}))
-                .unwrap_err()
-                .code,
-            expected
-        );
-        worker.join().unwrap();
-        std::fs::remove_dir_all(path).unwrap();
-    }
-}
-
-#[test]
-fn library_401_renews_once_and_replays_with_the_same_owner_and_new_vpc() {
-    let (url, worker) = mock_requests(
-        vec![
-            (200, json!({"requestStatus":{"serverId":"vpc-old"}})),
-            (401, json!({})),
-            (
-                200,
-                json!({"access_token":"renewed-access","expires_in":3600}),
-            ),
-            (
-                200,
-                json!({"sub":"account-a","email":"fixture@example.invalid"}),
-            ),
-            (200, json!({"requestStatus":{"serverId":"vpc-renewed"}})),
-            (
-                200,
-                json!({"data":{"apps":{"items":[],"pageInfo":{"totalCount":0,"hasNextPage":false}}}}),
-            ),
-        ],
-        |index, request| {
-            if matches!(index, 0 | 1 | 4 | 5) {
-                let expected = if index < 2 {
-                    "test-access"
-                } else {
-                    "renewed-access"
-                };
-                assert!(request.contains(&format!("GFNJWT {expected}")));
-            }
-            if index == 1 {
-                assert!(request.starts_with("POST /graphql "));
-                assert!(request.contains("vpc-old"));
-            }
-            if index == 5 {
-                assert!(request.starts_with("POST /graphql "));
-                assert!(request.contains("vpc-renewed"));
-            }
-            if index == 2 {
-                assert!(request.contains("client_id=test-client-id"));
-            }
-        },
-    );
-    let (service, path) = service(&url);
-    let result = service.library_catalog(&json!({}), &json!({})).unwrap();
-    assert_eq!(result["scope"]["generation"], 7);
-    assert_eq!(result["scope"]["userId"], "account-a");
-    assert!(!result.to_string().contains("renewed-access"));
-    worker.join().unwrap();
-    std::fs::remove_dir_all(path).unwrap();
-}
-
-#[test]
 fn second_401_is_terminal_and_never_loops_renewal() {
     let (url, worker) = mock_requests(
         vec![
@@ -1075,41 +945,6 @@ fn second_401_is_terminal_and_never_loops_renewal() {
         .unwrap_err();
     assert_eq!(error.code, "http_unauthorized");
     assert_eq!(calls.load(Ordering::SeqCst), 2);
-    worker.join().unwrap();
-    std::fs::remove_dir_all(path).unwrap();
-}
-
-#[test]
-fn delayed_library_result_cannot_publish_after_account_replacement() {
-    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
-    let (release_tx, release_rx) = std::sync::mpsc::channel();
-    let (url, worker) = mock_requests(
-        vec![
-            (200, json!({"requestStatus":{"serverId":"vpc-a"}})),
-            (
-                200,
-                json!({"data":{"apps":{"items":[],"pageInfo":{"hasNextPage":false}}}}),
-            ),
-        ],
-        move |index, _| {
-            if index == 1 {
-                entered_tx.send(()).unwrap();
-                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-            }
-        },
-    );
-    let (service, path) = service(&url);
-    std::thread::scope(|threads| {
-        let read = threads.spawn(|| service.library_catalog(&json!({}), &json!({})));
-        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        {
-            let mut state = service.state.lock().unwrap();
-            state.session = Some(auth_fixture("account-b"));
-            state.generation += 1;
-        }
-        release_tx.send(()).unwrap();
-        assert_eq!(read.join().unwrap().unwrap_err().code, "stale_account");
-    });
     worker.join().unwrap();
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -1399,7 +1234,7 @@ fn original_identity_regains_each_exact_seat_operation_after_generation_changes(
                         .unwrap();
                 }
                 "clear-cache" => {
-                    service.clear_cache();
+                    clear_cache(&service);
                 }
                 "relogin" => {
                     service
@@ -1464,13 +1299,15 @@ fn original_identity_regains_each_exact_seat_operation_after_generation_changes(
 
 #[test]
 fn durable_seat_republication_does_not_renew_allocation_receipt_authority() {
-    let mut responses = launch_metadata();
-    responses.extend([
-        (200, json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"fresh-seat","status":1}})),
+    let responses = vec![
+        (
+            200,
+            json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"fresh-seat","status":1}}),
+        ),
         (204, json!({})),
-    ]);
+    ];
     let (url, worker) = mock_requests(responses, |index, request| {
-        if index == 7 {
+        if index == 1 {
             assert!(request.starts_with("DELETE /v2/session/fresh-seat "));
         }
     });
@@ -1486,7 +1323,7 @@ fn durable_seat_republication_does_not_renew_allocation_receipt_authority() {
     service
         .create_session(&launch_params("123"), &json!({}))
         .unwrap();
-    service.clear_cache();
+    clear_cache(&service);
     assert_eq!(service.active_session().unwrap()["scope"]["generation"], 8);
     assert_eq!(
         service
@@ -1523,7 +1360,7 @@ fn rediscovery_stays_generation_fenced_and_same_user_other_provider_cannot_manag
         .seed_discovered_sessions(std::slice::from_ref(&seat));
     service.session_routing.lock().unwrap().discovery_owner =
         Some((owner.provider.idp_id.clone(), owner.user.user_id.clone(), 7));
-    service.clear_cache();
+    clear_cache(&service);
     assert_eq!(
         service.claim_session(&seat, &json!({})).unwrap_err().code,
         "session_owner_mismatch"
@@ -1598,7 +1435,7 @@ fn delayed_poll_fences_ordinary_results_but_preserves_exact_seat_termination() {
             std::thread::scope(|threads| {
                 let poll = threads.spawn(|| service.poll_session(&json!({"sessionId":"seat-a"})));
                 entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-                service.clear_cache();
+                clear_cache(&service);
                 release_tx.send(()).unwrap();
                 let result = poll.join().unwrap();
                 if status == 2 && !foreign_selected {
@@ -1666,4 +1503,106 @@ fn digevo_unreachable_discovery_endpoint_falls_back_to_latam_west() {
         effective_provider_url_with(&current, |_| false),
         "https://latam-west.dig.geforcenow.nvidiagrid.net/"
     );
+}
+
+#[test]
+fn create_posts_the_cloudmatch_body_built_from_the_caller_launch_params() {
+    let cases = [
+        (
+            json!({"title":"Launch fixture","accountLinked":true,"supportsInGameSettingsPersistence":true}),
+            json!({"internalTitle":"Launch fixture","accountLinked":true,"enablePersistingInGameSettings":true}),
+        ),
+        (
+            json!({}),
+            json!({"internalTitle":null,"accountLinked":false,"enablePersistingInGameSettings":false}),
+        ),
+        (
+            json!({"title":"Launch fixture","accountLinked":"yes","supportsInGameSettingsPersistence":"yes"}),
+            json!({"internalTitle":"Launch fixture","accountLinked":false,"enablePersistingInGameSettings":false}),
+        ),
+    ];
+    for (extra, expected) in cases {
+        let responses = vec![
+            (
+                200,
+                json!({"requestStatus":{"statusCode":1},"session":{"sessionId":"fresh-seat","status":1}}),
+            ),
+            (204, json!({})),
+        ];
+        let expected_body = expected.clone();
+        let (url, worker) = mock_requests(responses, move |index, request| {
+            if index != 0 {
+                return;
+            }
+            assert!(request.starts_with("POST /v2/session?"), "{request}");
+            let body: Value =
+                serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+            let data = &body["sessionRequestData"];
+            assert_eq!(data["appId"], 123);
+            for (key, value) in expected_body.as_object().unwrap() {
+                assert_eq!(&data[key], value, "{key}");
+            }
+        });
+        let (mut service, path) = service(&url);
+        service
+            .cloudmatch
+            .set_test_control_base(url::Url::parse(&url).unwrap());
+        let mut params = launch_params("123");
+        params["accountLinked"] = Value::Null;
+        params["title"] = Value::Null;
+        for (key, value) in extra.as_object().unwrap() {
+            params[key] = value.clone();
+        }
+        let created = service.create_session(&params, &json!({})).unwrap();
+        assert_eq!(created["session"]["sessionId"], "fresh-seat");
+        service.finish_session_create("fresh-seat", false).unwrap();
+        worker.join().unwrap();
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
+fn create_rejects_missing_or_invalid_launch_ids_before_any_request() {
+    let (service, path) = service("http://127.0.0.1:1");
+    let scope = launch_params("123")["scope"].clone();
+    for params in [
+        json!({"scope":scope}),
+        json!({"scope":scope,"appId":"123"}),
+        json!({"scope":scope,"variantId":"123"}),
+        json!({"scope":scope,"appId":"123","variantId":"456"}),
+        json!({"scope":scope,"appId":"","variantId":""}),
+        json!({"scope":scope,"appId":"abc","variantId":"abc"}),
+        json!({"scope":scope,"appId":"12 3","variantId":"12 3"}),
+        json!({"scope":scope,"appId":123,"variantId":123}),
+    ] {
+        let error = service.create_session(&params, &json!({})).unwrap_err();
+        assert_eq!(error.code, "invalid_params", "{params}");
+        assert!(service.cloudmatch.active()["session"].is_null());
+        assert!(service.cloudmatch.admit_create().is_ok());
+    }
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn create_requires_the_current_account_scope() {
+    let (service, path) = service("http://127.0.0.1:1");
+    let mut params = launch_params("123");
+    params["scope"]["generation"] = json!(8);
+    assert_eq!(
+        service
+            .create_session(&params, &json!({}))
+            .unwrap_err()
+            .code,
+        "stale_account"
+    );
+    params["scope"] = Value::Null;
+    assert_eq!(
+        service
+            .create_session(&params, &json!({}))
+            .unwrap_err()
+            .code,
+        "stale_account"
+    );
+    assert!(service.cloudmatch.active()["session"].is_null());
+    std::fs::remove_dir_all(path).unwrap();
 }

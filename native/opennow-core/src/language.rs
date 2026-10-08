@@ -1,4 +1,4 @@
-use serde_json::{Value, json};
+use serde_json::Value;
 
 const KEYBOARDS: &[(&str, &str, &[&str])] = &[
     ("en-US", "English (US)", &[]),
@@ -56,15 +56,6 @@ pub fn validate_setting(key: &str, value: &Value) -> Result<(), String> {
     }
 }
 
-pub fn keyboard_choices() -> Value {
-    json!(
-        KEYBOARDS
-            .iter()
-            .map(|(id, label, aliases)| { json!({"value":id, "label":label, "aliases":aliases}) })
-            .collect::<Vec<_>>()
-    )
-}
-
 pub fn session_keyboard_layout(settings: &Value) -> &'static str {
     settings["keyboardLayout"]
         .as_str()
@@ -85,6 +76,7 @@ pub fn append_session_preferences(url: &mut url::Url, settings: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn game_identifiers_preserve_wire_spelling_and_allow_safe_future_values() {

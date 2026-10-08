@@ -45,35 +45,36 @@ fn hello(version: u32) -> Value {
 }
 
 #[test]
-fn protocol_three_shells_are_rejected_before_the_paged_library_contract() {
-    let response = hello(3);
-    assert_eq!(response["ok"], false);
-    assert_eq!(response["error"]["code"], "incompatible_protocol");
-    assert!(response.get("result").is_none());
+fn protocol_five_shells_are_rejected_before_the_session_only_contract() {
+    for version in [3, 4, 5] {
+        let response = hello(version);
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"]["code"], "incompatible_protocol");
+        assert!(response.get("result").is_none());
+    }
 }
 
 #[test]
-fn protocol_four_shells_receive_the_paged_library_capabilities() {
-    let response = hello(4);
-    assert_eq!(response["ok"], false);
-    assert_eq!(response["error"]["code"], "incompatible_protocol");
-}
-
-#[test]
-fn protocol_five_shells_receive_the_paged_library_capabilities() {
-    let response = hello(5);
+fn protocol_six_shells_receive_the_session_capabilities() {
+    let response = hello(6);
     assert_eq!(response["ok"], true);
-    assert_eq!(response["result"]["protocolVersion"], 5);
+    assert_eq!(response["result"]["protocolVersion"], 6);
     let capabilities = response["result"]["capabilities"].as_array().unwrap();
     for capability in [
-        "catalog.libraryPages.v1",
-        "catalog.metadata.v1",
-        "account.syncObservation.v1",
-        "account.pushInvalidation.v1",
-        "catalog.languages.v1",
-        "queue.servers.v1",
+        "gfn.deviceAuth",
+        "gfn.providers",
+        "gfn.regions",
+        "gfn.cloudmatch",
+        "nativeStreamer.v7",
     ] {
         assert!(capabilities.contains(&json!(capability)));
+    }
+    for capability in [
+        "catalog.libraryPages.v1",
+        "queue.servers.v1",
+        "mediaLibrary",
+    ] {
+        assert!(!capabilities.contains(&json!(capability)));
     }
 }
 
@@ -93,7 +94,7 @@ fn writable_cores_exclusively_own_the_resolved_profile_until_exit() {
         .spawn()
         .unwrap();
     writeln!(first.stdin.as_mut().unwrap(), "{}", json!({
-        "type":"request","id":"owner","method":"core.hello","params":{"protocolVersion":5,"shell":"qt"}
+        "type":"request","id":"owner","method":"core.hello","params":{"protocolVersion":6,"shell":"qt"}
     })).unwrap();
     let stdout = first.stdout.take().unwrap();
     let (sender, receiver) = mpsc::channel();
@@ -102,21 +103,17 @@ fn writable_cores_exclusively_own_the_resolved_profile_until_exit() {
         let _ = sender.send(BufReader::new(stdout).read_line(&mut line).map(|_| line));
     });
     let ready = receiver.recv_timeout(Duration::from_secs(10));
-    let launch = |path: &std::path::Path, graphics: bool| {
+    let launch = |path: &std::path::Path| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_opennow-core"));
         command.arg("--data-dir").arg(path).stdin(Stdio::null());
-        if graphics {
-            command.arg("--graphics-preferences");
-        }
         command.output().unwrap()
     };
-    let second = launch(&directory, false);
-    let independent = launch(&other_directory, false);
-    let read_only = launch(&directory, true);
+    let second = launch(&directory);
+    let independent = launch(&other_directory);
     first.kill().unwrap();
     first.wait().unwrap();
     reader.join().unwrap();
-    let recovered = launch(&directory, false);
+    let recovered = launch(&directory);
     std::fs::remove_dir_all(&directory).unwrap();
     let hello: Value =
         serde_json::from_str(&ready.expect("owner handshake timed out").unwrap()).unwrap();
@@ -129,10 +126,6 @@ fn writable_cores_exclusively_own_the_resolved_profile_until_exit() {
     assert!(
         independent.status.success(),
         "a distinct profile was blocked"
-    );
-    assert!(
-        read_only.status.success(),
-        "read-only graphics preferences were blocked"
     );
     assert!(
         recovered.status.success(),
@@ -282,7 +275,7 @@ mod pending_profile_owner {
             "{}",
             json!({
                 "type":"request", "id":"owner", "method":"core.hello",
-                "params":{"protocolVersion":5,"shell":"qt"}
+                "params":{"protocolVersion":6,"shell":"qt"}
             })
         )
         .unwrap();
@@ -309,7 +302,7 @@ mod pending_profile_owner {
             "{}",
             json!({
                 "type":"request", "id":"width", "method":"settings.set",
-                "params":{"key":"windowWidth","value":1234}
+                "params":{"key":"fps","value":144}
             })
         )
         .unwrap();
@@ -354,7 +347,7 @@ mod pending_profile_owner {
         release_write.write_all(b"r").unwrap();
         let saved = response(&receiver, "width");
         assert_eq!(saved["ok"], true);
-        assert_eq!(saved["result"]["value"], 1234);
+        assert_eq!(saved["result"]["value"], 144);
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let tasks = std::fs::read_dir(format!("/proc/{}/task", first.child.id())).unwrap();
