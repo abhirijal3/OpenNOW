@@ -627,6 +627,9 @@ pub struct NvstFeedbackState {
     pending_frame_acks: Mutex<VecDeque<CompletedFrameFeedback>>,
     frame_packet_timings: Mutex<VecDeque<FramePacketTiming>>,
     frame_stage_timings: Mutex<FrameStageTimingsAccumulator>,
+    delivered_frames: AtomicU64,
+    delivered_bytes: AtomicU64,
+    delivered_keyframes: AtomicU64,
 }
 
 impl Default for NvstFeedbackState {
@@ -652,6 +655,9 @@ impl Default for NvstFeedbackState {
             pending_frame_acks: Mutex::new(VecDeque::new()),
             frame_packet_timings: Mutex::new(VecDeque::new()),
             frame_stage_timings: Mutex::new(FrameStageTimingsAccumulator::default()),
+            delivered_frames: AtomicU64::new(0),
+            delivered_bytes: AtomicU64::new(0),
+            delivered_keyframes: AtomicU64::new(0),
         }
     }
 }
@@ -1011,6 +1017,34 @@ impl NvstFeedbackState {
             assembled_at,
             packet_timing,
         });
+    }
+
+    pub fn record_delivered_frame(
+        &self,
+        frame_number: u32,
+        bytes: u32,
+        keyframe: bool,
+        delivered_at: Instant,
+    ) {
+        self.publish_accepted_frame(frame_number, bytes, delivered_at);
+        self.delivered_frames.fetch_add(1, Ordering::Relaxed);
+        self.delivered_bytes
+            .fetch_add(u64::from(bytes), Ordering::Relaxed);
+        if keyframe {
+            self.delivered_keyframes.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    pub fn delivered_frames(&self) -> u64 {
+        self.delivered_frames.load(Ordering::Relaxed)
+    }
+
+    pub fn delivered_bytes(&self) -> u64 {
+        self.delivered_bytes.load(Ordering::Relaxed)
+    }
+
+    pub fn delivered_keyframes(&self) -> u64 {
+        self.delivered_keyframes.load(Ordering::Acquire)
     }
 
     pub fn last_assembled_frame_at(&self) -> Option<Instant> {
@@ -7698,6 +7732,7 @@ fn forward_receive_event(
     event: NvstReceiveEvent,
 ) -> bool {
     if let NvstReceiveEvent::Frame(frame) = event {
+        let frame_bytes = u32::try_from(frame.bytes.len()).unwrap_or(u32::MAX);
         let media_frame = EncodedMediaFrame {
             mid: "nvst-video-0".to_owned(),
             codec: frame.codec.label().to_owned(),
@@ -7716,10 +7751,17 @@ fn forward_receive_event(
             ssrc: None,
         };
         let frame_index = frame.frame_index;
+        let frame_keyframe = frame.keyframe;
         feedback.publish_assembled_frame(frame_index, delivered_at);
         let (reason, keep_running) = match deliver_media_frame(media_consumer, media_frame) {
             Ok(()) => {
                 *delivery_gap = false;
+                feedback.record_delivered_frame(
+                    frame_index,
+                    frame_bytes,
+                    frame_keyframe,
+                    Instant::now(),
+                );
                 return true;
             }
             Err(TransportError::MediaConsumerBackpressured) => {
@@ -8463,7 +8505,10 @@ mod tests {
         ));
         let delivered = media_receiver.recv().expect("video frame");
         assert_eq!(delivered.frame_index, Some(2_417));
-        assert_eq!(feedback.frame_stage_timings().pending_deliveries, 1);
+        let timings = feedback.frame_stage_timings();
+        assert_eq!(timings.pending_deliveries, 0);
+        assert_eq!(timings.admitted_frames_total, 1);
+        assert_eq!(feedback.delivered_frames(), 1);
     }
 
     #[test]
@@ -8473,16 +8518,11 @@ mod tests {
             std::sync::mpsc::sync_channel(usize::try_from(FRAMES).expect("frame count"));
         let (event_sender, _event_receiver) = std::sync::mpsc::channel();
         let feedback: SharedNvstFeedback = Arc::new(NvstFeedbackState::default());
-        let consumer_feedback = Arc::clone(&feedback);
         std::thread::scope(|scope| {
             scope.spawn(move || {
                 for _ in 0..FRAMES {
                     let frame: EncodedMediaFrame = media_receiver.recv().expect("video frame");
-                    consumer_feedback.publish_accepted_frame(
-                        frame.frame_index.expect("sender frame index"),
-                        frame.payload.len() as u32,
-                        Instant::now(),
-                    );
+                    assert!(frame.frame_index.is_some());
                 }
             });
             for frame_index in 1..=FRAMES {
@@ -8513,6 +8553,9 @@ mod tests {
         );
         assert_eq!(timings.admitted_frames_total, u64::from(FRAMES));
         assert_eq!(timings.pending_deliveries, 0);
+        assert_eq!(feedback.delivered_frames(), u64::from(FRAMES));
+        assert_eq!(feedback.delivered_keyframes(), 1);
+        assert_eq!(feedback.delivered_bytes(), u64::from(FRAMES) * 5);
         let delivery = timings
             .delivery_to_admission
             .expect("every delivery produced a matched sample");
@@ -8563,9 +8606,10 @@ mod tests {
         assert!(media_receiver.recv().unwrap().contiguous);
         let timings = feedback.frame_stage_timings();
         assert_eq!(
-            timings.pending_deliveries, 1,
-            "the delivered frame is still awaiting admission feedback"
+            timings.pending_deliveries, 0,
+            "the delivered frame was admitted the moment the consumer accepted it"
         );
+        assert_eq!(timings.admitted_frames_total, 1);
         assert_eq!(timings.assembled_frames_total, 2);
         assert_eq!(
             timings.undelivered_frames_total, 1,

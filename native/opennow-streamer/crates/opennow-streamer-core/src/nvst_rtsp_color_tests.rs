@@ -1,5 +1,5 @@
 use super::*;
-use opennow_streamer_platform::{MediaColorQuality, MediaVideoCodec};
+use crate::stream_config::{MediaColorQuality, MediaVideoCodec};
 
 fn stream(color_quality: MediaColorQuality, hdr: bool) -> MediaStreamConfig {
     MediaStreamConfig {

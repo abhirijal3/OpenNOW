@@ -1,4 +1,4 @@
-use opennow_streamer_platform::MediaStreamConfig;
+use crate::stream_config::MediaStreamConfig;
 
 /// NVST ANNOUNCE color encoding, matching the official wire format.
 ///

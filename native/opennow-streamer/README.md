@@ -7,10 +7,9 @@ It takes one complete CloudMatch session context from `opennow-core`, reserves i
 ## Crates
 
 - `opennow-streamer-protocol`: session and command DTOs.
-- `opennow-streamer-core`: NVST lifecycle, command routing, media feedback and recording.
+- `opennow-streamer-core`: NVST lifecycle, command routing, input submission and event delivery. Encoded video and Opus audio go to an embedder-supplied `MediaConsumer`; input comes in through `Engine::captured_input()`.
 - `opennow-streamer-transport`: Mjolnir SRTP plus the NVST-required ICE/DTLS/SCTP, RTCP and input. No platform dependency; it emits whole access units and Opus packets.
 - `opennow-streamer-hid`: controller HID encoding.
-- `opennow-streamer-platform` and `opennow-streamer-platform-{windows,macos,linux}`: decode, audio output and GPU frame publication. The library won't decode or draw, so these go once core stops depending on them.
 
 ## Microphone upstream
 
@@ -22,14 +21,7 @@ audio. This follows the native bundle findings documented in OpenNOW-Mac's
 `docs/StreamTransportArchitecture.md` (reference revision `88a09bd68598651b367aa4744e7528da9c074d28`).
 Legacy RTSP/UDP microphone carriage is not implemented.
 
-Capture produces mono 48 kHz PCM and an off-callback encoder produces 10 ms Opus
-frames at 32 kbps. The frame size must match the server's `mic.frameSize:10`: the
-cloud PC's microphone stays silent when it receives 20 ms frames. PCM, encoded audio, and transport queues each hold at most five
-frames and drop old data under load. Mute closes capture and clears pending audio;
-unmute preserves the RTP clock and transport sequence lifetime. Capture or uplink
-failure disables only the microphone, not game audio/video. Session termination
-also closes capture. Queue drops are reported in microphone diagnostics without
-logging audio contents.
+The embedder captures and encodes the microphone itself and hands finished 10 ms Opus frames to `Engine::send_microphone_opus`, after enabling the uplink with `Engine::set_microphone_enabled`. The frame size must match the server's `mic.frameSize:10`: the cloud PC's microphone stays silent when it receives 20 ms frames. The transport queue holds at most five frames and drops old data under load.
 
 ## Session liveness and ping
 

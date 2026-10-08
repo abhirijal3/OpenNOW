@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use opennow_streamer_platform::MediaStreamConfig;
+use crate::stream_config::MediaStreamConfig;
 use opennow_streamer_protocol::SessionContext;
 use opennow_streamer_transport::nvst::{
     MAX_CONTROL_REPORT_BYTES, MAX_NVST_VIDEO_PEER_PORTS, MIN_CONTROL_REPORT_BYTES,

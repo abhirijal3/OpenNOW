@@ -8,7 +8,6 @@ rust-version.workspace = true
 [dependencies]
 base64.workspace = true
 getrandom.workspace = true
-opennow-streamer-platform = { path = "../opennow-streamer-platform" }
 opennow-streamer-hid = { path = "../opennow-streamer-hid" }
 opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
 opennow-streamer-transport = { path = "../opennow-streamer-transport" }
@@ -17,5 +16,4 @@ serde_json.workspace = true
 tungstenite.workspace = true
 
 [dev-dependencies]
-opennow-streamer-platform = { path = "../opennow-streamer-platform", features = ["test-runtime"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
