@@ -1,8 +1,6 @@
 [workspace]
 members = [
-    "crates/opennow-streamer",
     "crates/opennow-streamer-core",
-    "crates/opennow-streamer-ffi",
     "crates/opennow-streamer-hid",
     "crates/opennow-streamer-platform",
     "crates/opennow-streamer-platform-linux",
@@ -11,7 +9,6 @@ members = [
     "crates/opennow-streamer-protocol",
     "crates/opennow-streamer-transport",
 ]
-default-members = ["crates/opennow-streamer"]
 resolver = "2"
 
 [workspace.package]

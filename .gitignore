@@ -17,10 +17,6 @@ target3/
 /.cache/
 /video/
 /docs/research/
-# Native streamer staging outputs
-native/opennow-streamer/bin/opennow-streamer.exe
-native/opennow-streamer/bin/opennow-streamer
-native/opennow-streamer/bin/*/*
 
 # IDE
 .idea/

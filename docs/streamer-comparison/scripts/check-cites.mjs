@@ -8,7 +8,7 @@ const docsDir = resolve(here, "..");
 const repoRoot = resolve(docsDir, "../..");
 
 const files = readdirSync(docsDir).filter((name) => name.endsWith(".md"));
-const cite = /`((?:native|opennow-qt)\/[^`\s]+)`/g;
+const cite = /`(native\/[^`\s]+)`/g;
 
 let missing = 0;
 let checked = 0;

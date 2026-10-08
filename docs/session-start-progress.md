@@ -59,19 +59,3 @@ OpenNOW Mac's corresponding raw mapping is in
 `Model/Game/OPNSessionModels.swift`, `progressState(seatSetupStep:queuePosition:)`.
 The Qt core normalization is in `native/opennow-core/src/cloudmatch.rs`,
 `session_info`.
-
-## Verification
-
-`opennow-qt/tests/theme/tst_sessionprogress.qml` covers every known raw step,
-missing/invalid/future values, bounded queue positions, cleanup/storage precedence,
-backward transitions, lifecycle overrides, and the native first-frame wait.
-
-```sh
-cmake --build build/opennow-qt --target opennow-theme-tests
-ctest --test-dir build/opennow-qt --output-on-failure -R '^opennow-theme-tests$'
-npm run locales:check
-```
-
-The existing `qml-session-launch-*` acceptance checks cover first-frame handoff,
-confirmation overlays, reconnects, and the same video surface in windowed and
-fullscreen modes. Run those with the complete Qt executable before shipping.
