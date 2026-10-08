@@ -5,14 +5,16 @@
 OpenNOW's GFN client, being turned into a library that our streaming protocol embeds as its "GFN
 client" role. The desktop app is gone. What's left is Rust:
 
-- `native/opennow-core/` logs in, books the cloud seat through CloudMatch and prepares the session
-  context. Today it still runs as a child process speaking newline-delimited JSON
-  (`docs/core-protocol.md`), and it still carries store, artwork, Discord, updater and push
-  services that only the old UI used. Those go when it becomes a library.
+- `native/opennow-core/` signs in to NVIDIA, refreshes tokens, stores credentials and runs the
+  CloudMatch session lifecycle (create, poll, stop, claim), then builds the session context the
+  streamer consumes. It runs as a child process speaking newline-delimited JSON
+  (`docs/core-protocol.md`) until the library's C ABI replaces that.
 - `native/opennow-streamer/` runs the stream: RTSPS setup, the Mjolnir/ICE/DTLS/SCTP transport,
-  SRTP, depacketizing and input. `opennow-streamer-transport` is the heart and has no platform
-  dependency. The `opennow-streamer-platform*` crates decode, draw and play audio; the library
-  won't, so they are on their way out.
+  SRTP, depacketizing, input, QoS and recovery. It decodes nothing and draws nothing: whole video
+  access units (tagged with GFN's frame number), Opus packets and cursor events go to the embedder,
+  and input comes back in.
+
+Only GFN protocol code belongs here. No decoding, rendering, audio playback, capture or UI.
 
 The only target is Ubuntu Linux on our servers. macOS and Windows code paths are dead weight and
 go as the code they live in is reworked; don't add new ones.

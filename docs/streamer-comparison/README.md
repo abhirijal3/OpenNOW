@@ -46,8 +46,6 @@ OpenNOW paths you can open now:
 - `native/opennow-streamer/crates/opennow-streamer-core/src/nvst_rtsp.rs`
 - `native/opennow-streamer/crates/opennow-streamer-transport/src/nvst.rs`
 - `native/opennow-streamer/crates/opennow-streamer-transport/src/nvst_input.rs`
-- `native/opennow-streamer/crates/opennow-streamer-platform/src/windows_raw_input.rs`
-- `native/opennow-streamer/crates/opennow-streamer-platform/src/output.rs`
 - `native/opennow-core/src/cloudmatch.rs`
 - `native/opennow-core/src/streamer.rs`
 

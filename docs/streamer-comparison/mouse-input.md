@@ -112,8 +112,6 @@ NVST wrap is `COMMAND_REMOTE_INPUT` `0x0206`. Absolute encode injects flags `0x0
 
 ## Where things live
 
-- Raw Input. `native/opennow-streamer/crates/opennow-streamer-platform/src/windows_raw_input.rs`
-- Embedded capture ownership. `native/opennow-streamer/crates/opennow-streamer-platform/src/embedded_input.rs`
 - Tuning and packet. `native/opennow-streamer/crates/opennow-streamer-core/src/lib.rs` `tune_relative_mouse`, `captured_input_packet`
 - NVST encode and channels. `native/opennow-streamer/crates/opennow-streamer-transport/src/nvst_input.rs`
 

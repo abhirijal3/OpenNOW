@@ -91,9 +91,6 @@ Official logs `NVST:OpusAudioEncoderWrapper` payload 20 ms, 2 channels, `mVoiceB
 
 ## Where things live
 
-- WASAPI. `native/opennow-streamer/crates/opennow-streamer-platform-windows/src/windows/audio.rs`
-- Opus decode. `native/opennow-streamer/crates/opennow-streamer-platform/src/media.rs`
-- Embedded Linux audio and Opus PLC. `native/opennow-streamer/crates/opennow-streamer-platform-linux/src/audio.rs`
 - NVST audio and RED strip. `native/opennow-streamer/crates/opennow-streamer-transport/src/nvst.rs`
 - ANNOUNCE audio attrs. `native/opennow-streamer/crates/opennow-streamer-core/src/nvst_rtsp.rs`
 - CloudMatch stereo. `native/opennow-core/src/cloudmatch.rs`

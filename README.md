@@ -5,7 +5,7 @@ hands out GFN's video access units, Opus audio and cursor messages, takes input 
 rate and recovery levers. It has no UI and targets Ubuntu Linux servers only. The desktop app lives on upstream `main`.
 
 - `native/opennow-core/`: login, CloudMatch session booking, the session context.
-- `native/opennow-streamer/`: RTSPS setup, the NVST transport, depacketizing and input.
+- `native/opennow-streamer/`: RTSPS setup, the NVST transport, depacketizing, input, QoS and recovery.
 
 ```
 cargo test --manifest-path native/opennow-core/Cargo.toml

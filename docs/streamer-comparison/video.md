@@ -122,7 +122,6 @@ NVST does not send FIR. OpenNOW has no invalidation command and no display-freez
 - ANNOUNCE. `native/opennow-streamer/crates/opennow-streamer-core/src/nvst_rtsp.rs` `build_announce`
 - Receive, NACK, FEC, AU assemble. `native/opennow-streamer/crates/opennow-streamer-transport/src/nvst.rs`
 - IDR, ack, pacing, QoS. `native/opennow-streamer/crates/opennow-streamer-transport/src/nvst_control.rs`
-- Windows decode. `native/opennow-streamer/crates/opennow-streamer-platform-windows/src/windows/decoder.rs`
 - Present. `.../windows/graphics.rs`
 - Clock and worker. `.../windows/mod.rs`
 - CloudMatch color force. `native/opennow-core/src/cloudmatch.rs` around the native `bit_depth = 0` block
