@@ -1095,8 +1095,6 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
             );
             break;
         } else {
-            // Preserve high-polling-rate RawInput/SDL samples rather than
-            // turning several reports into one uneven movement burst.
             for _ in 0..32 {
                 let Some(input) = captured_input.take_sample() else {
                     break;
@@ -1335,9 +1333,6 @@ fn forward_nvst_event<R: NvstSessionResources>(
             "NVST receiver stopped unexpectedly".to_owned(),
         ),
         NvstReceiveEvent::Dropped(NvstDropReason::MediaConsumerBackpressured) => {
-            // A bounded consumer queue protects latency. A momentary full queue
-            // means this access unit is stale, not that the network session is
-            // dead. Keep receiving and ask for a clean reference frame.
             resources.request_keyframe();
             let _ = output.send(event(
                 "log",
