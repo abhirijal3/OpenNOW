@@ -6,6 +6,7 @@ It takes one complete CloudMatch session context from `opennow-core`, reserves i
 
 ## Crates
 
+- `opennow-gfn`: the C interface, built as a static library (`libopennow_gfn.a`, header `crates/opennow-gfn/include/opennow_gfn.h`). It hands every raw GFN video datagram to a C callback before the library processes it, plus access units, Opus audio and engine events, and takes engine commands and input.
 - `opennow-streamer-protocol`: session and command DTOs.
 - `opennow-streamer-core`: NVST lifecycle, command routing, input submission and event delivery. Encoded video and Opus audio go to an embedder-supplied `MediaConsumer`; input comes in through `Engine::captured_input()`.
 - `opennow-streamer-transport`: Mjolnir SRTP plus the NVST-required ICE/DTLS/SCTP, RTCP and input. No platform dependency; it emits whole access units and Opus packets.

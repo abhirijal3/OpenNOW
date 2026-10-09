@@ -1,0 +1,14 @@
+[package]
+name = "opennow-gfn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+opennow-streamer-core = { path = "../opennow-streamer-core" }
+opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
+serde_json.workspace = true

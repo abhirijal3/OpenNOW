@@ -54,7 +54,8 @@ use super::nvst_input::{
     sony_report_command,
 };
 use super::{
-    EncodedMediaFrame, MediaConsumer, TransportError, deliver_media_frame, install_crypto,
+    EncodedMediaFrame, MediaConsumer, RawPacketTap, TransportError, deliver_media_frame,
+    install_crypto,
 };
 use opennow_streamer_hid::{
     DRAIN_PER_ITERATION, EndpointToken, HidOutbound, HidRuntime, HidSession, IngressItem,
@@ -1354,6 +1355,7 @@ pub struct NvstVideoConfig {
     video_packet_size: usize,
     /// Feedback plane shared with the ICE/DTLS bundle (cloned configs share it).
     feedback: SharedNvstFeedback,
+    raw_video_tap: Option<RawPacketTap>,
 }
 
 impl fmt::Debug for NvstVideoConfig {
@@ -1782,6 +1784,7 @@ impl NvstVideoConfig {
             frame_time_us: DEFAULT_FRAME_TIME_US,
             video_packet_size,
             feedback: Arc::new(NvstFeedbackState::default()),
+            raw_video_tap: None,
         })
     }
 
@@ -1844,6 +1847,11 @@ impl NvstVideoConfig {
 
     pub fn mjolnir_udp_port(&self) -> Option<u16> {
         self.mjolnir_udp_port
+    }
+
+    pub fn with_raw_video_tap(mut self, tap: RawPacketTap) -> Self {
+        self.raw_video_tap = Some(tap);
+        self
     }
 }
 
@@ -7575,6 +7583,9 @@ fn run_nvst_udp_receiver(
                         StunDatagram::NotStun => non_stun += 1,
                     }
                 }
+                if expected_source && let Some(tap) = receiver.config.raw_video_tap.as_ref() {
+                    tap(&datagram[..length]);
+                }
                 let received_at = Instant::now();
                 let events = receiver.process_datagram(source, &datagram[..length], received_at);
                 if !authenticated_before {
@@ -11999,6 +12010,45 @@ mod tests {
                 assert_eq!(feedback.socket_receive_bytes(), packet.len() as u64);
             }
         }
+    }
+
+    #[test]
+    fn mjolnir_hands_each_raw_video_datagram_to_the_tap_unchanged() {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let client_address = client.local_addr().unwrap();
+        let mut handoff = legacy_handoff();
+        handoff["clientUdpPort"] = json!(client_address.port());
+        handoff["videoPeerIp"] = json!("127.0.0.1");
+        handoff["videoPeerPort"] = json!(server.local_addr().unwrap().port());
+        let tapped = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let sink = Arc::clone(&tapped);
+        let config = NvstVideoConfig::from_legacy_handoff(&handoff, None)
+            .unwrap()
+            .with_raw_video_tap(Arc::new(move |bytes: &[u8]| {
+                sink.lock().unwrap().push(bytes.to_vec());
+            }));
+        let packet = protect_for_test(
+            &test_srtp(&config),
+            build_plaintext_rtp(
+                1,
+                FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+                42,
+                &[0, 0, 1, 0x65],
+            ),
+            0,
+        );
+        let (media_consumer, media_receiver) = mpsc::sync_channel(1);
+        let (event_sender, _event_receiver) = mpsc::channel();
+        let session =
+            spawn_nvst_mjolnir_receiver(client, config, media_consumer, event_sender).unwrap();
+        server.send_to(&packet, client_address).unwrap();
+        let frame = media_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("video is still processed after the tap");
+        assert_eq!(frame.frame_index, Some(42));
+        session.stop();
+        assert_eq!(*tapped.lock().unwrap(), vec![packet.clone()]);
     }
 
     #[test]

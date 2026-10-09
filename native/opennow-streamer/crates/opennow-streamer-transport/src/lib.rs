@@ -74,6 +74,8 @@ pub struct EncodedMediaFrame {
 
 pub type MediaConsumer = SyncSender<EncodedMediaFrame>;
 
+pub type RawPacketTap = Arc<dyn Fn(&[u8]) + Send + Sync>;
+
 pub fn install_crypto() {
     INSTALL_CRYPTO.call_once(|| from_feature_flags().install_process_default());
 }

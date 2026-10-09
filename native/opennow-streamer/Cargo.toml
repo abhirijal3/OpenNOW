@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/opennow-gfn",
     "crates/opennow-streamer-core",
     "crates/opennow-streamer-hid",
     "crates/opennow-streamer-protocol",

@@ -28,7 +28,7 @@ use queue_drops::QueueDropReports;
 use stream_config::{MediaColorQuality, MediaStreamConfig, MediaVideoCodec};
 
 pub use input::{CapturedInput, CapturedInputQueue, CapturedInputSample};
-pub use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer};
+pub use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer, RawPacketTap};
 
 #[derive(Clone)]
 pub struct EventSender {
@@ -195,6 +195,7 @@ pub struct Engine {
     event_worker: Option<JoinHandle<QueueDropReports>>,
     captured_input: Arc<CapturedInputQueue>,
     hid_runtime: Arc<HidRuntime>,
+    raw_video_tap: Option<RawPacketTap>,
 }
 
 #[derive(Debug)]
@@ -229,11 +230,17 @@ impl Engine {
             event_worker: None,
             captured_input: Arc::new(CapturedInputQueue::default()),
             hid_runtime: Arc::new(HidRuntime::new()),
+            raw_video_tap: None,
         }
     }
 
     pub fn with_hid_runtime(mut self, hid_runtime: Arc<HidRuntime>) -> Self {
         self.hid_runtime = hid_runtime;
+        self
+    }
+
+    pub fn with_raw_video_tap(mut self, tap: RawPacketTap) -> Self {
+        self.raw_video_tap = Some(tap);
         self
     }
 
@@ -526,7 +533,10 @@ impl Engine {
             )
         })?;
         let nvst_config = match parse_nvst_video_handoff(&transport_context) {
-            Ok(Some(config)) => Some(config),
+            Ok(Some(config)) => Some(match &self.raw_video_tap {
+                Some(tap) => config.with_raw_video_tap(Arc::clone(tap)),
+                None => config,
+            }),
             Ok(None) => {
                 return Err(error(
                     Some(&command.id),
