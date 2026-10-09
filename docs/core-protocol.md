@@ -21,7 +21,7 @@ The first request is always:
 
 The core answers with the same protocol version, its `coreVersion` and a `capabilities` list
 (`settings`, `gfn.deviceAuth`, `gfn.providers`, `gfn.regions`, `gfn.cloudmatch`, `sessionProxy`,
-`nativeStreamer.v7`, `nativeStreamer.ownedNvstNegotiation`, `osCredentialStore`,
+`nativeStreamer.v7`, `nativeStreamer.ownedNvstNegotiation`,
 `redactedDiagnostics`). Any other protocol version is rejected with `incompatible_protocol`.
 Protocol 6 removed every method that is not listed under Methods. The native streamer
 protocol remains 7.
@@ -84,11 +84,11 @@ publication; once the fence is entered the login is committed even if the respon
 cancelled, and `auth.session.get` reconciles it. Logout or account replacement invalidates
 pending login work.
 
-Persistent sessions prefer the OS credential store (`secure-store`). `local-file` means tokens
-are saved in unencrypted JSON under `data_dir/fallback-sessions/<sha256 user>.json` with private
-file permissions because the OS store is unavailable. `memory-only` never writes a plaintext
-fallback. `migration-pending` means a recoverable legacy source remains, and `unavailable`
-means restoration failed. Warnings identify deferred cleanup without containing credentials.
+Sessions are saved as JSON, one file per account under `data_dir/fallback-sessions/<sha256 user>.json`
+with private file permissions. The core never uses an OS keychain. `local-file` is the normal
+persistence state, `memory-only` never writes a file, `migration-pending` means a recoverable
+legacy source remains, and `unavailable` means restoration failed. Warnings identify deferred
+cleanup without containing credentials.
 
 Logout always ends local auth ownership and reports `remoteRevoke` separately from
 `localCleanup`. Revocation is a best-effort DELETE of the selected client grant with an access

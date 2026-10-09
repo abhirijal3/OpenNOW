@@ -23,7 +23,6 @@ class Core:
     def __init__(self, data_dir):
         self.process = subprocess.Popen(
             [CORE, "--data-dir", data_dir],
-            env={**os.environ, "OPENNOW_CREDENTIAL_STORE": "file"},
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,

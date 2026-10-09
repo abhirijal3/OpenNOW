@@ -222,7 +222,7 @@ fn dispatch(method: &str, params: &Value, core: &AppCore) -> DispatchResult {
                 ));
             }
             Ok((
-                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.regions", "gfn.cloudmatch", "sessionProxy", "nativeStreamer.v7", "nativeStreamer.ownedNvstNegotiation", "osCredentialStore", "redactedDiagnostics"]}),
+                json!({"protocolVersion":PROTOCOL_VERSION, "coreVersion":version::APPLICATION_VERSION, "capabilities":["settings", "gfn.deviceAuth", "gfn.providers", "gfn.regions", "gfn.cloudmatch", "sessionProxy", "nativeStreamer.v7", "nativeStreamer.ownedNvstNegotiation", "redactedDiagnostics"]}),
                 None,
             ))
         }

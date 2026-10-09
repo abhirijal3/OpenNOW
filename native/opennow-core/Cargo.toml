@@ -6,12 +6,10 @@ license = "MIT"
 rust-version = "1.85"
 
 [dependencies]
-aes-gcm = "0.10"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 httpdate = "1"
 md5 = "0.7"
-keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 rand = "0.9"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "socks"] }

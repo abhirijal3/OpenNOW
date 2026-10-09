@@ -555,28 +555,6 @@ mod tests {
     }
 
     #[test]
-    fn windows_encryption_store_without_vault_keys_uses_json() {
-        let directory = tempfile::tempdir().unwrap();
-        let unavailable = || {
-            Box::new(MemorySecretStore {
-                unavailable: true,
-                ..Default::default()
-            }) as Box<dyn SecretStore>
-        };
-        let secure = super::super::encrypted_secret_store::EncryptedSecretStore::new(
-            directory.path().join("secure-sessions"),
-            unavailable(),
-            unavailable(),
-        );
-        let vault = CredentialVault::with_store(directory.path().into(), Box::new(secure));
-        let session = sample_session("user");
-        vault.save(&session).unwrap();
-        assert_eq!(vault.persistence_state(&session), "local-file");
-        assert!(vault.durable(&session));
-        assert!(!directory.path().join("secure-sessions").exists());
-    }
-
-    #[test]
     fn malformed_or_mismatched_local_json_does_not_restore_stale_secure_tokens() {
         let directory = tempfile::tempdir().unwrap();
         let store = JsonFallbackStore::new(directory.path().into(), Box::<Store>::default());

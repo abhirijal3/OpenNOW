@@ -1,5 +1,4 @@
 use crate::gfn::AuthSession;
-use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -7,14 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-#[cfg(any(windows, test))]
-mod encrypted_secret_store;
 mod json_secret_store;
-
-const SERVICE_NAME: &str = "app.opennow.auth";
-const STORE_ENV: &str = "OPENNOW_CREDENTIAL_STORE";
-#[cfg(windows)]
-const KEY_SERVICE_NAME: &str = "app.opennow.auth.session-keys";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,33 +61,6 @@ trait SecretStore: Send + Sync {
     }
 }
 
-struct OsSecretStore {
-    service: &'static str,
-}
-
-impl SecretStore for OsSecretStore {
-    fn get(&self, user_id: &str) -> Result<Option<String>, String> {
-        match credential(self.service, user_id)?.get_password() {
-            Ok(value) => Ok(Some(value)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(_) => Err("OS credential store is unavailable or locked".into()),
-        }
-    }
-
-    fn set(&self, user_id: &str, encoded: &str) -> Result<(), String> {
-        credential(self.service, user_id)?
-            .set_password(encoded)
-            .map_err(|_| "OS credential store could not save the session".into())
-    }
-
-    fn delete(&self, user_id: &str) -> Result<(), String> {
-        match credential(self.service, user_id)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(_) => Err("OS credential store could not remove the session".into()),
-        }
-    }
-}
-
 struct NoOsSecretStore;
 
 impl SecretStore for NoOsSecretStore {
@@ -131,24 +96,7 @@ impl CredentialVault {
         )
     }
     pub fn new(data_dir: PathBuf) -> Self {
-        if std::env::var(STORE_ENV).as_deref() == Ok("file") {
-            return Self::with_store(data_dir, Box::new(NoOsSecretStore));
-        }
-        #[cfg(windows)]
-        let store = Box::new(encrypted_secret_store::EncryptedSecretStore::new(
-            data_dir.join("secure-sessions"),
-            Box::new(OsSecretStore {
-                service: KEY_SERVICE_NAME,
-            }),
-            Box::new(OsSecretStore {
-                service: SERVICE_NAME,
-            }),
-        ));
-        #[cfg(not(windows))]
-        let store = Box::new(OsSecretStore {
-            service: SERVICE_NAME,
-        });
-        Self::with_store(data_dir, store)
+        Self::with_store(data_dir, Box::new(NoOsSecretStore))
     }
 
     fn with_store(data_dir: PathBuf, store: Box<dyn SecretStore>) -> Self {
@@ -806,11 +754,6 @@ fn parse_legacy_auth_state(bytes: &[u8]) -> Result<LegacyAuthState, String> {
         .sessions
         .dedup_by(|left, right| left.user.user_id == right.user.user_id);
     Ok(legacy)
-}
-
-fn credential(service: &str, user_id: &str) -> Result<Entry, String> {
-    Entry::new(service, &format!("session:{user_id}"))
-        .map_err(|error| format!("OS credential store is unavailable: {error}"))
 }
 
 #[cfg(unix)]

@@ -229,7 +229,7 @@ const PING_INTERVAL_AFTER_CONNECTION: Duration = Duration::from_millis(100);
 const UDP_RECEIVE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 // The WebRTC bundle owns the SCTP input channels. A 10 ms socket wait batches
 // raw mouse reports and makes high-refresh streams feel closer to 100 Hz.
-const CONTROL_RECEIVE_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const CONTROL_RECEIVE_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const STUN_HEADER_LEN: usize = 20;
 const STUN_MAGIC_COOKIE: u32 = 0x2112_a442;
 const STUN_BINDING_REQUEST: u16 = 0x0001;
@@ -4915,8 +4915,54 @@ enum UdpReceiverCommand {
 
 /// Owns the bounded UDP receive worker. Frames go through the same bounded `MediaConsumer` used
 /// by WebRTC, so a slow decoder cannot make UDP receive unbounded.
+#[derive(Clone)]
+struct CommandSender {
+    sender: Sender<UdpReceiverCommand>,
+    waker: Option<Arc<LoopWaker>>,
+}
+
+impl CommandSender {
+    fn send(&self, command: UdpReceiverCommand) -> Result<(), mpsc::SendError<UdpReceiverCommand>> {
+        let sent = self.sender.send(command);
+        if let Some(waker) = &self.waker {
+            waker.wake();
+        }
+        sent
+    }
+}
+
+struct LoopWaker {
+    socket: UdpSocket,
+    target: SocketAddr,
+}
+
+impl LoopWaker {
+    fn for_socket(socket: &UdpSocket) -> Option<Self> {
+        let local = socket.local_addr().ok()?;
+        let target_ip = match local.ip() {
+            IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+            ip => ip,
+        };
+        let bind_ip = match target_ip {
+            IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+        };
+        let waker = UdpSocket::bind(SocketAddr::new(bind_ip, 0)).ok()?;
+        waker.set_nonblocking(true).ok()?;
+        Some(Self {
+            socket: waker,
+            target: SocketAddr::new(target_ip, local.port()),
+        })
+    }
+
+    fn wake(&self) {
+        let _ = self.socket.send_to(&[], self.target);
+    }
+}
+
 pub struct NvstUdpReceiverSession {
-    commands: Sender<UdpReceiverCommand>,
+    commands: CommandSender,
     join: Option<JoinHandle<()>>,
     input_ready: Arc<AtomicBool>,
     microphone: Arc<Mutex<MicrophoneQueue>>,
@@ -4924,7 +4970,7 @@ pub struct NvstUdpReceiverSession {
 
 #[derive(Clone)]
 pub struct NvstUdpReceiverControl {
-    commands: Sender<UdpReceiverCommand>,
+    commands: CommandSender,
     input_ready: Arc<AtomicBool>,
     microphone: Arc<Mutex<MicrophoneQueue>>,
 }
@@ -5776,7 +5822,13 @@ fn spawn_receiver_thread(
     socket
         .set_read_timeout(Some(UDP_RECEIVE_POLL_INTERVAL))
         .map_err(NvstUdpReceiverError::Configure)?;
-    let (commands, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::channel();
+    let waker = if setup.rtc.is_some() {
+        LoopWaker::for_socket(&socket).map(Arc::new)
+    } else {
+        None
+    };
+    let commands = CommandSender { sender, waker };
     let input_ready = Arc::new(AtomicBool::new(false));
     let worker_input_ready = input_ready.clone();
     let microphone = Arc::new(Mutex::new(MicrophoneQueue::new(
@@ -6469,6 +6521,7 @@ fn run_nvst_webrtc_bundle(
     let mut pending_input_version = None;
     let mut audio_receiver = NvstAudioReceiver::default();
     let mut reported_port_unreachable = false;
+    let mut applied_wait: Option<Duration> = None;
     'bundle: loop {
         let now = Instant::now();
         if let Some(ready) = upstream_ready.as_ref() {
@@ -7262,6 +7315,11 @@ fn run_nvst_webrtc_bundle(
         let wait = timeout
             .saturating_duration_since(Instant::now())
             .min(CONTROL_RECEIVE_POLL_INTERVAL);
+        let wait = if wait.is_zero() {
+            wait
+        } else {
+            Duration::from_millis(u64::try_from(wait.as_micros().div_ceil(1000)).unwrap_or(1))
+        };
         if wait.is_zero() {
             if let Err(error) = rtc.handle_input(Input::Timeout(Instant::now())) {
                 eprintln!("NVST WebRTC timer failed: {error}");
@@ -7269,12 +7327,16 @@ fn run_nvst_webrtc_bundle(
                 break 'bundle;
             }
         } else {
-            if let Err(error) = socket.set_read_timeout(Some(wait)) {
-                eprintln!("NVST UDP timeout configuration failed: {error}");
-                forward_optional(&event_sender, receiver.stop());
-                break 'bundle;
+            if applied_wait != Some(wait) {
+                if let Err(error) = socket.set_read_timeout(Some(wait)) {
+                    eprintln!("NVST UDP timeout configuration failed: {error}");
+                    forward_optional(&event_sender, receiver.stop());
+                    break 'bundle;
+                }
+                applied_wait = Some(wait);
             }
             match socket.recv_from(&mut datagram) {
+                Ok((0, _)) => continue,
                 Ok((length, source)) => {
                     inbound_datagrams += 1;
                     if inbound_datagrams == 1 {
@@ -7588,6 +7650,9 @@ fn run_nvst_udp_receiver(
                 }
                 let received_at = Instant::now();
                 let events = receiver.process_datagram(source, &datagram[..length], received_at);
+                if receiver.last_authenticated_packet.is_some() {
+                    peer_seen = true;
+                }
                 if !authenticated_before {
                     feedback.record_socket_receive(
                         StreamSocket::Video,
@@ -7857,11 +7922,40 @@ mod tests {
     }
 
     #[test]
+    fn a_queued_command_wakes_a_blocked_bundle_socket() {
+        let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let commands = super::CommandSender {
+            sender,
+            waker: super::LoopWaker::for_socket(&socket).map(Arc::new),
+        };
+        let started = Instant::now();
+        let woken = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 16];
+            socket.recv_from(&mut buffer).map(|(length, _)| length)
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        commands.send(super::UdpReceiverCommand::Pause).unwrap();
+        assert_eq!(woken.join().unwrap().unwrap(), 0);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(super::UdpReceiverCommand::Pause)
+        ));
+    }
+
+    #[test]
     fn typed_text_queue_preserves_order_reservation_and_readiness() {
         use opennow_streamer_protocol::text_input::{TextInputError, TextInputSlot};
-        let (commands, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = std::sync::mpsc::channel();
         let control = super::NvstUdpReceiverControl {
-            commands,
+            commands: super::CommandSender {
+                sender,
+                waker: None,
+            },
             input_ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             microphone: std::sync::Arc::new(std::sync::Mutex::new(super::MicrophoneQueue::new(
                 false,
