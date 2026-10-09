@@ -19,8 +19,12 @@ Only GFN protocol code belongs here. No decoding, rendering, audio playback, cap
 The only target is Ubuntu Linux on our servers. macOS and Windows code paths are dead weight and
 go as the code they live in is reworked; don't add new ones.
 
+How the protocol's POP uses this library, the session steps, measured cost and what is left:
+`docs/protocol-integration.md`.
+
 What the library has to do, and the rest of the GFN story, lives in the protocol repo. Start at
-`~/Documents/GitHub/protocol/docs/v2/README.md` (see `CLAUDE.local.md` if you are Claude).
+`~/Documents/GitHub/protocol/docs/v2/README.md`; how that project works is in
+`~/Documents/GitHub/protocol/CLAUDE.md` (see `CLAUDE.local.md` if you are Claude).
 
 ## Priorities
 
