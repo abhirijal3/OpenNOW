@@ -39,6 +39,7 @@ typedef struct {
     atomic_uint_fast64_t audio_bytes;
     atomic_uint_fast64_t events_seen;
     atomic_uint_fast64_t parity_packets;
+    atomic_uint_fast64_t frames_ended;
     atomic_uint_fast64_t sequence_gaps;
     atomic_uint_fast64_t latency_sum_us;
     atomic_uint_fast64_t latency_max_us;
@@ -103,6 +104,7 @@ static void on_video_packet(void *user, const uint8_t *data, size_t len) {
         if (sources > 0 && index >= sources) {
             atomic_fetch_add(&c->parity_packets, 1);
         } else if (flags == GS_LAST_PACKET || flags == GS_ONLY_PACKET) {
+            atomic_fetch_add(&c->frames_ended, 1);
             atomic_store(&c->frame_done_us[frame % FRAME_SLOTS], arrived);
             atomic_store(&c->frame_done_id[frame % FRAME_SLOTS], frame);
         }
@@ -228,7 +230,7 @@ static void print_stats(collector_t *c, uint64_t elapsed_us, snapshot_t *last) {
     snapshot_t now = {
         .bytes = atomic_load(&c->video_bytes),
         .packets = atomic_load(&c->video_packets),
-        .access_units = atomic_load(&c->access_units),
+        .access_units = atomic_load(&c->access_units) + atomic_load(&c->frames_ended),
         .audio = atomic_load(&c->audio_packets),
         .cpu_us = cpu_time_us(&max_rss),
         .at_us = now_us(),

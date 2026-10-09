@@ -149,9 +149,11 @@ pub unsafe extern "C" fn opennow_gfn_create(
     let callbacks = Callbacks(*callbacks);
     let (media_sender, media_receiver) = mpsc::sync_channel(MEDIA_QUEUE_FRAMES);
     let (event_sender, event_receiver) = mpsc::channel();
-    let tap = callbacks;
-    let engine = Engine::with_media_consumer(event_sender, media_sender)
-        .with_raw_video_tap(Arc::new(move |bytes: &[u8]| tap.video_packet(bytes)));
+    let mut engine = Engine::with_media_consumer(event_sender, media_sender);
+    if callbacks.0.on_video_packet.is_some() {
+        let tap = callbacks;
+        engine = engine.with_raw_video_tap(Arc::new(move |bytes: &[u8]| tap.video_packet(bytes)));
+    }
     let input = engine.captured_input();
     let workers = vec![
         spawn_media_worker(media_receiver, callbacks),
