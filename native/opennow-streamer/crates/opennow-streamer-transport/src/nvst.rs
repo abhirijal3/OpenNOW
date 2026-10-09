@@ -2203,6 +2203,7 @@ pub enum NvstReceiveEvent {
     },
     FrameProgressResumed,
     Lifecycle(NvstReceiverState),
+    Wake,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7122,6 +7123,7 @@ fn run_nvst_webrtc_bundle(
                                 || data.id == channels.control_partial
                             {
                                 feedback.haptics.receive(&data.data);
+                                let _ = event_sender.send(NvstReceiveEvent::Wake);
                             }
                             if data.id == channels.control_reliable
                                 && let (Some(hid_session), Some(hid_runtime)) =

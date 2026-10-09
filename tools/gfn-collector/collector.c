@@ -66,6 +66,9 @@ static uint64_t now_us(void) {
 }
 
 static void write_record(FILE *file, uint64_t stamp, const uint8_t *data, size_t len) {
+    if (file == NULL) {
+        return;
+    }
     const uint32_t length = (uint32_t)len;
     if (fwrite(&stamp, sizeof(stamp), 1, file) != 1 || fwrite(&length, sizeof(length), 1, file) != 1 ||
         fwrite(data, 1, len, file) != len) {
@@ -265,10 +268,13 @@ int main(int argc, char **argv) {
     collector_t c;
     memset(&c, 0, sizeof(c));
     pthread_mutex_init(&c.events_lock, NULL);
-    c.video = open_output(out_dir, "video.bin", "wb");
-    c.audio = open_output(out_dir, "audio.bin", "wb");
+    const int record = argc < 5 || strcmp(argv[4], "norecord") != 0;
+    if (record) {
+        c.video = open_output(out_dir, "video.bin", "wb");
+        c.audio = open_output(out_dir, "audio.bin", "wb");
+    }
     c.events = open_output(out_dir, "events.jsonl", "w");
-    if (c.video == NULL || c.audio == NULL || c.events == NULL) {
+    if ((record && (c.video == NULL || c.audio == NULL)) || c.events == NULL) {
         fprintf(stderr, "collector: cannot open outputs in %s\n", out_dir);
         return 1;
     }
@@ -334,8 +340,12 @@ int main(int argc, char **argv) {
     command(gfn, "{\"id\":\"stop\",\"type\":\"stop\",\"reason\":\"collector-finished\"}");
     opennow_gfn_destroy(gfn);
     print_stats(&c, now_us() - began, &last);
-    fclose(c.video);
-    fclose(c.audio);
+    if (c.video != NULL) {
+        fclose(c.video);
+    }
+    if (c.audio != NULL) {
+        fclose(c.audio);
+    }
     fclose(c.events);
     pthread_mutex_destroy(&c.events_lock);
     return 0;

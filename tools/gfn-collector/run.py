@@ -144,6 +144,7 @@ def main():
     parser.add_argument("--provider", default="NVIDIA")
     parser.add_argument("--region", default="india")
     parser.add_argument("--seconds", type=int, default=120)
+    parser.add_argument("--no-record", action="store_true")
     parser.add_argument("--data-dir", default=os.path.expanduser("~/.local/share/opennow-collector"))
     parser.add_argument("--out", default=os.path.join(HERE, "runs", time.strftime("%Y%m%d-%H%M%S")))
     args = parser.parse_args()
@@ -162,7 +163,10 @@ def main():
         with open(context_path, "w") as handle:
             json.dump(prepared["context"], handle)
         log(f"collecting for {args.seconds} s into {args.out}")
-        subprocess.run([COLLECTOR, context_path, args.out, str(args.seconds)], check=False)
+        command = [COLLECTOR, context_path, args.out, str(args.seconds)]
+        if args.no_record:
+            command.append("norecord")
+        subprocess.run(command, check=False)
     finally:
         if session is not None:
             try:

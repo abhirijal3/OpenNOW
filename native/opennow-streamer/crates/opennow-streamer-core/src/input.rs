@@ -50,9 +50,27 @@ pub struct CapturedInputSample {
     pub captured_at: Instant,
 }
 
+type InputWaker = Box<dyn Fn() + Send + Sync>;
+
+#[derive(Default)]
+struct InputWake {
+    rung: AtomicBool,
+    waker: Mutex<Option<InputWaker>>,
+}
+
+impl std::fmt::Debug for InputWake {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InputWake")
+            .field("rung", &self.rung)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct CapturedInputQueue {
     pending: Mutex<VecDeque<CapturedInputSample>>,
+    wake: InputWake,
     overflowed: AtomicBool,
     text_ready: AtomicBool,
     text_generation: AtomicU64,
@@ -60,6 +78,34 @@ pub struct CapturedInputQueue {
 }
 
 impl CapturedInputQueue {
+    pub fn set_waker(&self, waker: Option<InputWaker>) {
+        *self
+            .wake
+            .waker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = waker;
+        self.wake.rung.store(false, Ordering::Release);
+    }
+
+    pub fn begin_drain(&self) {
+        self.wake.rung.store(false, Ordering::Release);
+    }
+
+    fn ring(&self) {
+        if self.wake.rung.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if let Some(waker) = self
+            .wake
+            .waker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            waker();
+        }
+    }
+
     pub fn set_text_ready(&self, generation: u64, ready: bool) {
         let mut pending = self
             .pending
@@ -97,6 +143,8 @@ impl CapturedInputQueue {
             input: CapturedInput::Text(text),
             captured_at: Instant::now(),
         });
+        drop(pending);
+        self.ring();
         Ok(())
     }
 
@@ -141,10 +189,14 @@ impl CapturedInputQueue {
                 pending.remove(index);
             } else {
                 self.overflowed.store(true, Ordering::Release);
+                drop(pending);
+                self.ring();
                 return;
             }
         }
         pending.push_back(sample);
+        drop(pending);
+        self.ring();
     }
 
     pub fn release_gamepad(&self, controller_id: u8, bitmap: u16) {
@@ -172,6 +224,8 @@ impl CapturedInputQueue {
             captured_at: Instant::now(),
         });
         debug_assert!(pending.len() <= CAPTURED_INPUT_CAPACITY + 4);
+        drop(pending);
+        self.ring();
     }
 
     pub fn take(&self) -> Option<CapturedInput> {
@@ -237,5 +291,39 @@ mod tests {
                 pressed: true,
             })
         );
+    }
+
+    #[test]
+    fn queued_input_rings_the_waker_once_until_the_next_drain() {
+        let queue = CapturedInputQueue::default();
+        let rings = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&rings);
+        queue.set_waker(Some(Box::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })));
+        queue.push(CapturedInput::MouseMove {
+            delta_x: 1,
+            delta_y: 0,
+        });
+        queue.push(CapturedInput::MouseMove {
+            delta_x: -1,
+            delta_y: 0,
+        });
+        assert_eq!(rings.load(Ordering::SeqCst), 1);
+        queue.begin_drain();
+        assert!(queue.take().is_some());
+        assert!(queue.take().is_some());
+        queue.push(CapturedInput::MouseButton {
+            button: 1,
+            pressed: true,
+        });
+        assert_eq!(rings.load(Ordering::SeqCst), 2);
+        queue.set_waker(None);
+        queue.begin_drain();
+        queue.push(CapturedInput::MouseButton {
+            button: 1,
+            pressed: false,
+        });
+        assert_eq!(rings.load(Ordering::SeqCst), 2);
     }
 }

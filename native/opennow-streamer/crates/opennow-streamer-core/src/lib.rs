@@ -72,7 +72,8 @@ enum State {
 }
 
 const NVST_RECOVERY_ATTEMPT_LIMIT: usize = 1;
-const NATIVE_INPUT_POLL_INTERVAL: Duration = Duration::from_micros(250);
+const NATIVE_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const NATIVE_INPUT_DRAIN_BATCH: usize = 32;
 const MAX_STREAM_FPS: u32 = 360;
 
 trait NvstSessionResources {
@@ -613,6 +614,10 @@ impl Engine {
         if let Some(config) = nvst_config {
             let media_consumer = self.media_consumer.clone();
             let (event_sender, event_receiver) = std::sync::mpsc::channel();
+            let input_waker = event_sender.clone();
+            self.captured_input.set_waker(Some(Box::new(move || {
+                let _ = input_waker.send(NvstReceiveEvent::Wake);
+            })));
             let (reserved_socket, reserved_rtc, reserved_mjolnir) =
                 match self.reserved_nvst_bundle.take() {
                     Some(bundle) => {
@@ -818,6 +823,7 @@ impl Engine {
     }
 
     fn stop(&mut self, reason: &str) {
+        self.captured_input.set_waker(None);
         if let Some(generation) = self.hid_runtime.session_generation() {
             self.hid_runtime.unbind_session(generation);
         }
@@ -1063,6 +1069,7 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
         pending: None,
     };
     'session: loop {
+        let mut drained = 0_usize;
         flush_cursor_capture(output, lifecycle, generation, &mut pending_cursor_capture);
         observe_delivered_frames(&resources, &mut feedback_state);
         feedback_state
@@ -1105,10 +1112,12 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
             );
             break;
         } else {
-            for _ in 0..32 {
+            captured_input.begin_drain();
+            for _ in 0..NATIVE_INPUT_DRAIN_BATCH {
                 let Some(input) = captured_input.take_sample() else {
                     break;
                 };
+                drained += 1;
                 if let Err(error) = forward_nvst_captured_sample(&resources, input, &feedback_state)
                 {
                     let _ = emit_nvst_terminal(
@@ -1123,7 +1132,13 @@ fn forward_nvst_session_events<R: NvstSessionResources>(
                 }
             }
         }
-        match nvst_events.recv_timeout(NATIVE_INPUT_POLL_INTERVAL) {
+        let wait = if drained == NATIVE_INPUT_DRAIN_BATCH {
+            Duration::ZERO
+        } else {
+            NATIVE_INPUT_POLL_INTERVAL
+        };
+        match nvst_events.recv_timeout(wait) {
+            Ok(NvstReceiveEvent::Wake) => {}
             Ok(nvst_event) => {
                 match &nvst_event {
                     NvstReceiveEvent::InputReady(_) => {
@@ -1420,7 +1435,7 @@ fn forward_nvst_event<R: NvstSessionResources>(
             ));
             false
         }
-        NvstReceiveEvent::Frame(_) => false,
+        NvstReceiveEvent::Frame(_) | NvstReceiveEvent::Wake => false,
     }
 }
 
