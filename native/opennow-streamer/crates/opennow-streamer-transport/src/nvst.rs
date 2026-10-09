@@ -883,6 +883,9 @@ impl NvstFeedbackState {
             .pending_nacks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pending.is_empty() {
+            return false;
+        }
         let mut updated = VecDeque::with_capacity(pending.len().saturating_add(1));
         let mut resolved = false;
         while let Some(range) = pending.pop_front() {
@@ -912,23 +915,38 @@ impl NvstFeedbackState {
     }
 
     fn publish_completed_frame(&self, frame: &EncodedVideoAccessUnit) {
-        self.last_sender_frame
-            .store(frame.frame_index, Ordering::Release);
-        self.completed_frame_bytes.fetch_add(
-            u64::try_from(frame.bytes.len()).unwrap_or(u64::MAX),
-            Ordering::AcqRel,
-        );
-        if frame.keyframe && self.keyframe_needed.swap(false, Ordering::AcqRel) {
+        self.publish_completed_frame_fields(frame.frame_index, frame.bytes.len(), frame.keyframe);
+    }
+
+    fn publish_completed_frame_fields(&self, frame_index: u32, bytes: usize, keyframe: bool) {
+        self.last_sender_frame.store(frame_index, Ordering::Release);
+        self.completed_frame_bytes
+            .fetch_add(u64::try_from(bytes).unwrap_or(u64::MAX), Ordering::AcqRel);
+        if keyframe && self.keyframe_needed.swap(false, Ordering::AcqRel) {
             opennow_streamer_protocol::log::log_async(
                 "INFO",
                 "nvst-keyframe",
-                &format!(
-                    "assembled frame={} bytes={} recovery_pending=false",
-                    frame.frame_index,
-                    frame.bytes.len()
-                ),
+                &format!("assembled frame={frame_index} bytes={bytes} recovery_pending=false"),
             );
         }
+    }
+
+    fn publish_header_only_frame(
+        &self,
+        frame_number: u32,
+        bytes: usize,
+        keyframe: bool,
+        now: Instant,
+    ) {
+        self.publish_completed_frame_fields(frame_number, bytes, keyframe);
+        self.complete_frame_packets(frame_number);
+        self.publish_assembled_frame(frame_number, now);
+        self.record_delivered_frame(
+            frame_number,
+            u32::try_from(bytes).unwrap_or(u32::MAX),
+            keyframe,
+            now,
+        );
     }
 
     pub fn publish_assembled_frame(&self, frame_number: u32, assembled_at: Instant) {
@@ -1356,6 +1374,7 @@ pub struct NvstVideoConfig {
     /// Feedback plane shared with the ICE/DTLS bundle (cloned configs share it).
     feedback: SharedNvstFeedback,
     raw_video_tap: Option<RawPacketTap>,
+    header_only: bool,
 }
 
 impl fmt::Debug for NvstVideoConfig {
@@ -1785,6 +1804,7 @@ impl NvstVideoConfig {
             video_packet_size,
             feedback: Arc::new(NvstFeedbackState::default()),
             raw_video_tap: None,
+            header_only: false,
         })
     }
 
@@ -1852,6 +1872,15 @@ impl NvstVideoConfig {
     pub fn with_raw_video_tap(mut self, tap: RawPacketTap) -> Self {
         self.raw_video_tap = Some(tap);
         self
+    }
+
+    pub fn with_header_only(mut self, on: bool) -> Self {
+        self.header_only = on;
+        self
+    }
+
+    pub fn header_only(&self) -> bool {
+        self.header_only
     }
 }
 
@@ -2462,6 +2491,34 @@ impl SrtpReceiver {
             cipher,
             replay: ReplayWindow::default(),
         }
+    }
+
+    fn tag_len(&self) -> usize {
+        match &self.cipher {
+            SrtpCipher::AeadAes128Gcm {
+                authentication_tag_len,
+                ..
+            }
+            | SrtpCipher::AeadAes256Gcm {
+                authentication_tag_len,
+                ..
+            }
+            | SrtpCipher::AesCm128HmacSha1 {
+                authentication_tag_len,
+                ..
+            }
+            | SrtpCipher::AesCm256HmacSha1 {
+                authentication_tag_len,
+                ..
+            } => *authentication_tag_len,
+        }
+    }
+
+    fn admit_unauthenticated(&mut self, sequence_number: u16) -> Result<u64, NvstDropReason> {
+        let index = self.replay.guess_packet_index(sequence_number)?;
+        self.replay.check(index)?;
+        self.replay.commit(index);
+        Ok(index)
     }
 
     fn unprotect(&mut self, datagram: &[u8]) -> Result<RtpPacket, NvstDropReason> {
@@ -3455,7 +3512,11 @@ struct FecPacketLayout {
 
 impl FecPacketLayout {
     fn from_packet(packet: &RtpPacket) -> Option<Self> {
-        let extension = packet.header.gs_video_header?;
+        Self::from_header(&packet.header)
+    }
+
+    fn from_header(header: &RtpHeader) -> Option<Self> {
+        let extension = header.gs_video_header?;
         let frame_index = u32::from_le_bytes(extension[4..8].try_into().ok()?);
         let fec_word = u32::from_le_bytes(extension[12..16].try_into().ok()?);
         let repair_percent = usize::try_from((fec_word >> 4) & 0xff).ok()?;
@@ -4184,6 +4245,143 @@ impl SrtcpSender {
     }
 }
 
+const HEADER_ONLY_FRAME_SLOTS: usize = 32;
+const HEADER_ONLY_MAX_GROUPS: usize = 4;
+const GS_FRAME_TYPE_IDR: u32 = 2;
+const STREAM_PACKET_COUNTER_SPAN: u32 = STREAM_PACKET_INDEX_MASK + 1;
+
+#[derive(Debug, Clone, Copy)]
+struct HeaderOnlyPacket {
+    frame_number: u32,
+    group: usize,
+    group_count: usize,
+    source_count: u16,
+    parity: bool,
+    payload_len: usize,
+    start: bool,
+    end: bool,
+    counter: u32,
+    keyframe: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct HeaderOnlyGroup {
+    source_count: u16,
+    data: u16,
+    parity: u16,
+    first_counter: Option<u32>,
+    last_counter: Option<u32>,
+}
+
+impl HeaderOnlyGroup {
+    fn is_complete(&self) -> bool {
+        if self.source_count > 0 {
+            return self.data.saturating_add(self.parity) >= self.source_count;
+        }
+        match (self.first_counter, self.last_counter) {
+            (Some(first), Some(last)) => {
+                u32::from(self.data) == last.wrapping_sub(first) % STREAM_PACKET_COUNTER_SPAN + 1
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct HeaderOnlyFrame {
+    frame_number: u32,
+    active: bool,
+    completed: bool,
+    keyframe: bool,
+    group_count: usize,
+    bytes: usize,
+    groups: [HeaderOnlyGroup; HEADER_ONLY_MAX_GROUPS],
+}
+
+impl HeaderOnlyFrame {
+    fn is_complete(&self) -> bool {
+        self.group_count > 0
+            && self.groups[..self.group_count]
+                .iter()
+                .all(HeaderOnlyGroup::is_complete)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HeaderOnlyCompletion {
+    frame_number: u32,
+    bytes: usize,
+    keyframe: bool,
+}
+
+#[derive(Debug, Clone)]
+struct HeaderOnlyFrames {
+    slots: [HeaderOnlyFrame; HEADER_ONLY_FRAME_SLOTS],
+}
+
+impl Default for HeaderOnlyFrames {
+    fn default() -> Self {
+        Self {
+            slots: [HeaderOnlyFrame::default(); HEADER_ONLY_FRAME_SLOTS],
+        }
+    }
+}
+
+impl HeaderOnlyFrames {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn observe(&mut self, packet: HeaderOnlyPacket) -> Option<HeaderOnlyCompletion> {
+        let slot = &mut self.slots[packet.frame_number as usize % HEADER_ONLY_FRAME_SLOTS];
+        if slot.active
+            && slot.frame_number != packet.frame_number
+            && (packet.frame_number.wrapping_sub(slot.frame_number) as i32) <= 0
+        {
+            return None;
+        }
+        if !slot.active || slot.frame_number != packet.frame_number {
+            *slot = HeaderOnlyFrame {
+                frame_number: packet.frame_number,
+                active: true,
+                ..HeaderOnlyFrame::default()
+            };
+        }
+        if slot.completed {
+            return None;
+        }
+        let group_count = packet
+            .group_count
+            .max(packet.group + 1)
+            .min(HEADER_ONLY_MAX_GROUPS);
+        slot.group_count = slot.group_count.max(group_count);
+        slot.keyframe |= packet.keyframe;
+        let group = &mut slot.groups[packet.group.min(HEADER_ONLY_MAX_GROUPS - 1)];
+        group.source_count = group.source_count.max(packet.source_count);
+        if packet.parity {
+            group.parity = group.parity.saturating_add(1);
+        } else {
+            group.data = group.data.saturating_add(1);
+            slot.bytes = slot.bytes.saturating_add(packet.payload_len);
+            if packet.start {
+                group.first_counter = Some(packet.counter);
+            }
+            if packet.end {
+                group.last_counter = Some(packet.counter);
+            }
+        }
+        if !slot.is_complete() {
+            return None;
+        }
+        slot.completed = true;
+        Some(HeaderOnlyCompletion {
+            frame_number: slot.frame_number,
+            bytes: slot.bytes,
+            keyframe: slot.keyframe,
+        })
+    }
+}
+
 /// Stateful, non-blocking NVST video receiver. `process_datagram` is deterministic and testable;
 /// `spawn_nvst_udp_receiver` below is a thin UDP/thread wrapper for the production path.
 pub struct NvstVideoReceiver {
@@ -4210,6 +4408,7 @@ pub struct NvstVideoReceiver {
     last_authenticated_packet: Option<Instant>,
     initial_timeout_pending: bool,
     frame_progress: FrameProgressWatchdog,
+    header_frames: HeaderOnlyFrames,
 }
 
 impl NvstVideoReceiver {
@@ -4245,6 +4444,7 @@ impl NvstVideoReceiver {
             last_authenticated_packet: None,
             initial_timeout_pending: true,
             frame_progress: FrameProgressWatchdog::default(),
+            header_frames: HeaderOnlyFrames::default(),
         }
     }
 
@@ -4380,31 +4580,50 @@ impl NvstVideoReceiver {
         }
     }
 
+    fn admission_drop(&self, source: SocketAddr) -> Option<NvstDropReason> {
+        if !self.config.accepts_video_source(source) {
+            return Some(NvstDropReason::UnexpectedSource {
+                expected: self.config.video_peer,
+                actual: source,
+            });
+        }
+        match self.state {
+            NvstReceiverState::Paused => Some(NvstDropReason::Paused),
+            NvstReceiverState::Stopped => Some(NvstDropReason::Stopped),
+            NvstReceiverState::RecoveryRequired => Some(NvstDropReason::RecoveryRequired),
+            NvstReceiverState::Running => None,
+        }
+    }
+
+    fn identity_drop(&self, header: &RtpHeader) -> Option<NvstDropReason> {
+        if let Some(expected) = self.config.expected_payload_type
+            && header.payload_type != expected
+        {
+            return Some(NvstDropReason::UnexpectedPayloadType {
+                expected,
+                actual: header.payload_type,
+            });
+        }
+        let expected_ssrc = self.config.expected_ssrc.or(self.bound_ssrc);
+        if let Some(expected) = expected_ssrc
+            && header.ssrc != expected
+        {
+            return Some(NvstDropReason::UnexpectedSsrc {
+                expected,
+                actual: header.ssrc,
+            });
+        }
+        None
+    }
+
     pub fn process_datagram(
         &mut self,
         source: SocketAddr,
         datagram: &[u8],
         now: Instant,
     ) -> Vec<NvstReceiveEvent> {
-        if !self.config.accepts_video_source(source) {
-            return vec![NvstReceiveEvent::Dropped(
-                NvstDropReason::UnexpectedSource {
-                    expected: self.config.video_peer,
-                    actual: source,
-                },
-            )];
-        }
-        match self.state {
-            NvstReceiverState::Paused => {
-                return vec![NvstReceiveEvent::Dropped(NvstDropReason::Paused)];
-            }
-            NvstReceiverState::Stopped => {
-                return vec![NvstReceiveEvent::Dropped(NvstDropReason::Stopped)];
-            }
-            NvstReceiverState::RecoveryRequired => {
-                return vec![NvstReceiveEvent::Dropped(NvstDropReason::RecoveryRequired)];
-            }
-            NvstReceiverState::Running => {}
+        if let Some(reason) = self.admission_drop(source) {
+            return vec![NvstReceiveEvent::Dropped(reason)];
         }
         let packet = match self.srtp.unprotect(datagram) {
             Ok(packet) => packet,
@@ -4415,24 +4634,8 @@ impl NvstVideoReceiver {
                 return vec![NvstReceiveEvent::Dropped(reason)];
             }
         };
-        if let Some(expected) = self.config.expected_payload_type
-            && packet.header.payload_type != expected
-        {
-            return vec![NvstReceiveEvent::Dropped(
-                NvstDropReason::UnexpectedPayloadType {
-                    expected,
-                    actual: packet.header.payload_type,
-                },
-            )];
-        }
-        let expected_ssrc = self.config.expected_ssrc.or(self.bound_ssrc);
-        if let Some(expected) = expected_ssrc
-            && packet.header.ssrc != expected
-        {
-            return vec![NvstReceiveEvent::Dropped(NvstDropReason::UnexpectedSsrc {
-                expected,
-                actual: packet.header.ssrc,
-            })];
+        if let Some(reason) = self.identity_drop(&packet.header) {
+            return vec![NvstReceiveEvent::Dropped(reason)];
         }
         if let Some(extension) = packet.header.gs_video_header {
             let frame_number =
@@ -4597,6 +4800,125 @@ impl NvstVideoReceiver {
         events
     }
 
+    pub fn process_header_only(
+        &mut self,
+        source: SocketAddr,
+        datagram: &[u8],
+        now: Instant,
+    ) -> Vec<NvstReceiveEvent> {
+        if let Some(reason) = self.admission_drop(source) {
+            return vec![NvstReceiveEvent::Dropped(reason)];
+        }
+        let header = match RtpHeader::parse(datagram) {
+            Ok(header) => header,
+            Err(error) => {
+                return vec![NvstReceiveEvent::Dropped(NvstDropReason::MalformedRtp(
+                    error,
+                ))];
+            }
+        };
+        let Some(payload_len) = datagram
+            .len()
+            .checked_sub(header.payload_offset)
+            .and_then(|length| length.checked_sub(self.srtp.tag_len()))
+        else {
+            return vec![NvstReceiveEvent::Dropped(NvstDropReason::MalformedRtp(
+                RtpParseError::MissingAuthenticationTag,
+            ))];
+        };
+        let Some(extension) = header.gs_video_header else {
+            return vec![NvstReceiveEvent::Dropped(NvstDropReason::MalformedRtp(
+                RtpParseError::MissingNvVideoHeader,
+            ))];
+        };
+        let index = match self.srtp.admit_unauthenticated(header.sequence_number) {
+            Ok(index) => index,
+            Err(reason) => {
+                if reason == NvstDropReason::ReplayRejected {
+                    self.replay_rejections += 1;
+                }
+                return vec![NvstReceiveEvent::Dropped(reason)];
+            }
+        };
+        if let Some(reason) = self.identity_drop(&header) {
+            return vec![NvstReceiveEvent::Dropped(reason)];
+        }
+        let Ok((video, _)) = NvVideoPacket::parse(&header, &[]) else {
+            return vec![NvstReceiveEvent::Dropped(NvstDropReason::MalformedRtp(
+                RtpParseError::MissingNvVideoHeader,
+            ))];
+        };
+        self.config
+            .feedback
+            .record_frame_packet(video.frame_index, now);
+        self.bound_ssrc.get_or_insert(header.ssrc);
+        self.last_authenticated_packet = Some(now);
+        self.initial_timeout_pending = false;
+        self.frame_progress.authenticated(now);
+        self.authenticated_packets += 1;
+        let sequence = u32::try_from(index & 0xffff_ffff).unwrap_or(u32::MAX);
+        let reordered =
+            self.authenticated_packets > 1 && sequence <= self.highest_sequence_received;
+        self.highest_sequence_received = self.highest_sequence_received.max(sequence);
+        let retransmitted = self.config.feedback.resolve_nack(index);
+        if retransmitted {
+            self.recovered_retransmissions += 1;
+        }
+        let video_sample = (!retransmitted && !reordered).then_some((
+            video.frame_index,
+            sequence,
+            payload_len,
+            video.is_start_of_frame(),
+            video.is_end_of_frame(),
+            video.is_fec,
+        ));
+        self.config.feedback.publish_stream_packet(
+            header.ssrc,
+            self.highest_sequence_received,
+            header.timestamp,
+            now,
+            video_sample,
+        );
+
+        let layout = FecPacketLayout::from_header(&header);
+        let parity = layout.is_some_and(|layout| layout.shard_index >= layout.data_shards);
+        if parity {
+            self.fec_packets += 1;
+        }
+        let flags_word = u32::from_le_bytes(extension[8..12].try_into().expect("length checked"));
+        let completion = self.header_frames.observe(HeaderOnlyPacket {
+            frame_number: video.frame_index,
+            group: usize::from(video.fec_current_block),
+            group_count: usize::from(video.fec_last_block) + 1,
+            source_count: layout.map_or(0, |layout| {
+                u16::try_from(layout.data_shards).unwrap_or(u16::MAX)
+            }),
+            parity,
+            payload_len,
+            start: video.flags & FLAG_SOF != 0,
+            end: video.flags & FLAG_EOF != 0,
+            counter: video.stream_packet_index,
+            keyframe: (flags_word >> 20) & 0x0f == GS_FRAME_TYPE_IDR,
+        });
+        let mut events = Vec::new();
+        if let Some(completion) = completion {
+            self.frames_emitted += 1;
+            if self
+                .frame_progress
+                .assembled(completion.frame_number, completion.keyframe)
+            {
+                events.push(NvstReceiveEvent::FrameProgressResumed);
+            }
+            self.config.feedback.publish_header_only_frame(
+                completion.frame_number,
+                completion.bytes,
+                completion.keyframe,
+                now,
+            );
+        }
+        events
+    }
+
     fn invalidate_picture(&mut self) {
         self.assembler.reset();
         self.last_stream_packet_index = None;
@@ -4667,6 +4989,7 @@ impl NvstVideoReceiver {
         self.reorder.reset();
         self.fec_reorder.reset();
         self.assembler.reset();
+        self.header_frames.reset();
         self.last_stream_packet_index = None;
         self.next_frame_contiguous = false;
         self.config
@@ -7498,7 +7821,8 @@ fn run_nvst_udp_receiver(
     let mut receiver = NvstVideoReceiver::new(config);
     let mut video_delivery_gap = false;
     let stun_credentials = receiver.config.stun_credentials.clone();
-    let mut datagram = vec![0_u8; 65_536];
+    let header_only = receiver.config.header_only;
+    let mut datagram = vec![0_u8; receive_buffer_len(&receiver.config)];
     let mut peer_seen = false;
     let mut last_ping = Instant::now() - PING_INTERVAL_BEFORE_CONNECTION;
     let mut pings_sent = 0_u64;
@@ -7651,7 +7975,11 @@ fn run_nvst_udp_receiver(
                     tap(&datagram[..length]);
                 }
                 let received_at = Instant::now();
-                let events = receiver.process_datagram(source, &datagram[..length], received_at);
+                let events = if header_only {
+                    receiver.process_header_only(source, &datagram[..length], received_at)
+                } else {
+                    receiver.process_datagram(source, &datagram[..length], received_at)
+                };
                 if receiver.last_authenticated_packet.is_some() {
                     peer_seen = true;
                 }
@@ -7791,6 +8119,14 @@ fn run_nvst_udp_receiver(
                 }
             }
         }
+    }
+}
+
+fn receive_buffer_len(config: &NvstVideoConfig) -> usize {
+    if config.header_only {
+        (config.video_packet_size + RTP_FIXED_HEADER_LEN + NV_VIDEO_PACKET_LEN + 64).max(2_048)
+    } else {
+        65_536
     }
 }
 
@@ -12145,6 +12481,201 @@ mod tests {
         assert_eq!(frame.frame_index, Some(42));
         session.stop();
         assert_eq!(*tapped.lock().unwrap(), vec![packet.clone()]);
+    }
+
+    #[test]
+    fn mjolnir_header_only_mode_taps_every_datagram_and_delivers_no_media() {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let client_address = client.local_addr().unwrap();
+        let mut handoff = legacy_handoff();
+        handoff["clientUdpPort"] = json!(client_address.port());
+        handoff["videoPeerIp"] = json!("127.0.0.1");
+        handoff["videoPeerPort"] = json!(server.local_addr().unwrap().port());
+        let tapped = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let sink = Arc::clone(&tapped);
+        let config = NvstVideoConfig::from_legacy_handoff(&handoff, None)
+            .unwrap()
+            .with_raw_video_tap(Arc::new(move |bytes: &[u8]| {
+                sink.lock().unwrap().push(bytes.to_vec());
+            }))
+            .with_header_only(true);
+        let feedback = config.feedback();
+        let packet = protect_for_test(
+            &test_srtp(&config),
+            build_plaintext_rtp(
+                1,
+                FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+                42,
+                &[0, 0, 1, 0x65],
+            ),
+            0,
+        );
+        let (media_consumer, media_receiver) = mpsc::sync_channel(1);
+        let (event_sender, _event_receiver) = mpsc::channel();
+        let session =
+            spawn_nvst_mjolnir_receiver(client, config, media_consumer, event_sender).unwrap();
+        server.send_to(&packet, client_address).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while feedback.delivered_frames() == 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(feedback.delivered_frames(), 1);
+        assert!(media_receiver.try_recv().is_err());
+        session.stop();
+        assert_eq!(*tapped.lock().unwrap(), vec![packet.clone()]);
+    }
+
+    struct GsPacket {
+        sequence: u16,
+        frame_index: u32,
+        flags: u8,
+        group: u8,
+        groups: u8,
+        percent: u32,
+        index: u32,
+        source: u32,
+    }
+
+    fn gs_plaintext(packet: &GsPacket) -> Vec<u8> {
+        let mut bytes = vec![0x90, 0xe0];
+        bytes.extend_from_slice(&packet.sequence.to_be_bytes());
+        bytes.extend_from_slice(&0x01020304u32.to_be_bytes());
+        bytes.extend_from_slice(&0x11223344u32.to_be_bytes());
+        bytes.extend_from_slice(&GS_VIDEO_EXTENSION_PROFILE.to_be_bytes());
+        bytes.extend_from_slice(&4_u16.to_be_bytes());
+        bytes.extend_from_slice(&(u32::from(packet.sequence) << 8).to_le_bytes());
+        bytes.extend_from_slice(&packet.frame_index.to_le_bytes());
+        let flags_word = u32::from(packet.flags)
+            | u32::from(packet.group & 3) << 28
+            | u32::from(packet.groups.saturating_sub(1) & 3) << 30;
+        bytes.extend_from_slice(&flags_word.to_le_bytes());
+        let fec_word = packet.percent << 4 | packet.index << 12 | packet.source << 22;
+        bytes.extend_from_slice(&fec_word.to_le_bytes());
+        bytes.extend_from_slice(&[0xab; 40]);
+        bytes
+    }
+
+    fn fec_frame_packet(sequence: u16, frame_index: u32, index: u32, source: u32) -> GsPacket {
+        GsPacket {
+            sequence,
+            frame_index,
+            flags: FLAG_CONTAINS_PIC_DATA,
+            group: 0,
+            groups: 1,
+            percent: 34,
+            index,
+            source,
+        }
+    }
+
+    fn header_only_receiver() -> (NvstVideoReceiver, SrtpReceiver) {
+        let config = config().with_header_only(true);
+        let crypto = test_srtp(&config);
+        (NvstVideoReceiver::new(config), crypto)
+    }
+
+    fn feed_header_only(
+        receiver: &mut NvstVideoReceiver,
+        crypto: &SrtpReceiver,
+        packet: &GsPacket,
+    ) -> Vec<NvstReceiveEvent> {
+        let datagram = protect_for_test(crypto, gs_plaintext(packet), 0);
+        receiver.process_header_only(peer(), &datagram, Instant::now())
+    }
+
+    #[test]
+    fn header_only_acknowledges_a_frame_once_every_data_packet_arrives() {
+        let (mut receiver, crypto) = header_only_receiver();
+        let feedback = receiver.config.feedback();
+        for (sequence, index) in [(1, 0), (2, 1)] {
+            let events = feed_header_only(
+                &mut receiver,
+                &crypto,
+                &fec_frame_packet(sequence, 7, index, 3),
+            );
+            assert!(events.is_empty());
+            assert_eq!(feedback.delivered_frames(), 0);
+        }
+        let events = feed_header_only(&mut receiver, &crypto, &fec_frame_packet(3, 7, 2, 3));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, NvstReceiveEvent::Frame(_)))
+        );
+        assert_eq!(feedback.delivered_frames(), 1);
+        assert_eq!(feedback.take_completed_frame().unwrap().frame_number, 7);
+        assert!(feedback.take_completed_frame().is_none());
+    }
+
+    #[test]
+    fn header_only_counts_a_frame_rebuildable_from_parity_as_complete() {
+        let (mut receiver, crypto) = header_only_receiver();
+        let feedback = receiver.config.feedback();
+        feed_header_only(&mut receiver, &crypto, &fec_frame_packet(1, 8, 0, 3));
+        feed_header_only(&mut receiver, &crypto, &fec_frame_packet(2, 8, 1, 3));
+        assert_eq!(feedback.delivered_frames(), 0);
+        feed_header_only(&mut receiver, &crypto, &fec_frame_packet(3, 8, 3, 3));
+        assert_eq!(feedback.delivered_frames(), 1);
+
+        feed_header_only(&mut receiver, &crypto, &fec_frame_packet(4, 9, 0, 3));
+        feed_header_only(&mut receiver, &crypto, &fec_frame_packet(5, 9, 3, 3));
+        assert_eq!(feedback.delivered_frames(), 1);
+        feed_header_only(&mut receiver, &crypto, &fec_frame_packet(6, 9, 1, 3));
+        assert_eq!(feedback.delivered_frames(), 2);
+    }
+
+    #[test]
+    fn header_only_counts_packets_whose_srtp_tag_is_corrupted() {
+        let (mut receiver, crypto) = header_only_receiver();
+        let feedback = receiver.config.feedback();
+        let mut datagram = protect_for_test(
+            &crypto,
+            gs_plaintext(&GsPacket {
+                percent: 100,
+                ..fec_frame_packet(1, 5, 0, 1)
+            }),
+            0,
+        );
+        let last = datagram.len() - 1;
+        datagram[last] ^= 0xff;
+        let mut strict = NvstVideoReceiver::new(config());
+        assert!(matches!(
+            strict.process_datagram(peer(), &datagram, Instant::now())[..],
+            [NvstReceiveEvent::Dropped(_)]
+        ));
+        receiver.process_header_only(peer(), &datagram, Instant::now());
+        assert_eq!(receiver.authenticated_packets, 1);
+        assert_eq!(feedback.delivered_frames(), 1);
+    }
+
+    #[test]
+    fn header_only_stream_counters_match_the_normal_path() {
+        let (mut header_only, crypto) = header_only_receiver();
+        let mut normal = NvstVideoReceiver::new(config());
+        let sequences = [1_u16, 2, 4, 3, 5];
+        for (position, sequence) in sequences.into_iter().enumerate() {
+            let packet = fec_frame_packet(sequence, 11, position as u32 % 3, 3);
+            let datagram = protect_for_test(&crypto, gs_plaintext(&packet), 0);
+            header_only.process_header_only(peer(), &datagram, Instant::now());
+            normal.process_datagram(peer(), &datagram, Instant::now());
+        }
+        let left = header_only.config.feedback();
+        let right = normal.config.feedback();
+        assert_eq!(
+            left.received_packets.load(Ordering::Acquire),
+            right.received_packets.load(Ordering::Acquire)
+        );
+        assert_eq!(left.received_packets.load(Ordering::Acquire), 5);
+        assert_eq!(
+            left.highest_sequence.load(Ordering::Acquire),
+            right.highest_sequence.load(Ordering::Acquire)
+        );
+        assert_eq!(left.highest_sequence.load(Ordering::Acquire), 5);
+        assert_eq!(
+            header_only.highest_sequence_received,
+            normal.highest_sequence_received
+        );
     }
 
     #[test]

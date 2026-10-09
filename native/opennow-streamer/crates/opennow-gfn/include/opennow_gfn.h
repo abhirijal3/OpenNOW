@@ -54,11 +54,14 @@ typedef struct {
  *
  * on_video_packet gets every GFN video datagram exactly as it arrived on the
  * video socket (encrypted, GS header in the clear), on the library's video
- * receive thread, before the library processes it. The bytes are valid only
- * during the call.
+ * receive thread. The bytes are valid only during the call. Setting
+ * on_video_packet puts the library in header-only mode: it never decrypts,
+ * repairs or assembles video, and only reads the clear RTP and GS headers to
+ * send GFN its frame acknowledgements, timing and QoS feedback.
  *
- * on_media gets the library's own output: whole video access units with GFN's
- * frame number, and Opus audio. on_event gets every engine event and every
+ * on_media gets the library's own output: Opus audio only when on_video_packet
+ * is set, otherwise also whole video access units with GFN's frame number.
+ * on_event gets every engine event and every
  * command response as UTF-8 JSON (not NUL-terminated). Both run on library
  * threads; pointers are valid only during the call.
  *

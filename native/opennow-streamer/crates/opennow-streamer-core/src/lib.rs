@@ -535,7 +535,9 @@ impl Engine {
         })?;
         let nvst_config = match parse_nvst_video_handoff(&transport_context) {
             Ok(Some(config)) => Some(match &self.raw_video_tap {
-                Some(tap) => config.with_raw_video_tap(Arc::clone(tap)),
+                Some(tap) => config
+                    .with_raw_video_tap(Arc::clone(tap))
+                    .with_header_only(true),
                 None => config,
             }),
             Ok(None) => {
