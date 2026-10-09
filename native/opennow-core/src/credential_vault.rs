@@ -12,6 +12,7 @@ mod encrypted_secret_store;
 mod json_secret_store;
 
 const SERVICE_NAME: &str = "app.opennow.auth";
+const STORE_ENV: &str = "OPENNOW_CREDENTIAL_STORE";
 #[cfg(windows)]
 const KEY_SERVICE_NAME: &str = "app.opennow.auth.session-keys";
 
@@ -95,6 +96,22 @@ impl SecretStore for OsSecretStore {
     }
 }
 
+struct NoOsSecretStore;
+
+impl SecretStore for NoOsSecretStore {
+    fn get(&self, _user_id: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
+    fn set(&self, _user_id: &str, _encoded: &str) -> Result<(), String> {
+        Err("OS credential store is turned off".into())
+    }
+
+    fn delete(&self, _user_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 impl CredentialVault {
     #[cfg(test)]
     pub(crate) fn memory(data_dir: PathBuf) -> Self {
@@ -114,6 +131,9 @@ impl CredentialVault {
         )
     }
     pub fn new(data_dir: PathBuf) -> Self {
+        if std::env::var(STORE_ENV).as_deref() == Ok("file") {
+            return Self::with_store(data_dir, Box::new(NoOsSecretStore));
+        }
         #[cfg(windows)]
         let store = Box::new(encrypted_secret_store::EncryptedSecretStore::new(
             data_dir.join("secure-sessions"),
@@ -844,6 +864,30 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn file_only_vault_saves_restores_and_removes_without_the_os_store() {
+        let directory = tempfile::tempdir().unwrap();
+        let vault = CredentialVault::with_store(directory.path().into(), Box::new(NoOsSecretStore));
+        let session = sample_session("file-user");
+        vault.save(&session).unwrap();
+        assert_eq!(
+            fs::read_dir(directory.path().join("fallback-sessions"))
+                .unwrap()
+                .count(),
+            1
+        );
+        drop(vault);
+        let restored =
+            CredentialVault::with_store(directory.path().into(), Box::new(NoOsSecretStore));
+        assert_eq!(
+            restored.load_active().unwrap().unwrap().user.user_id,
+            "file-user"
+        );
+        assert!(restored.durable(&session));
+        restored.remove("file-user").unwrap();
+        assert!(restored.load_active().unwrap().is_none());
     }
 
     #[test]
