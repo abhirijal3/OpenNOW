@@ -1,9 +1,36 @@
 # AGENTS.md
 
+Scope note: Abhi's global `~/.claude/CLAUDE.md` rules (no code comments, dev-base gate,
+mobile handoff, etc.) are written for Maptician's JS/TS work. They do not apply in this
+repo. This file is the shared source of project rules for all agents working here.
+
+## Shared context: Claude Code, Codex, Gemini, and Antigravity
+
+`AGENTS.md` is the single source of truth for project rules and context. Codex discovers
+it directly; `CLAUDE.md` and `GEMINI.md` import it (`@AGENTS.md`). Antigravity loads it
+via workspace rules. Edit shared rules here, never maintain separate copies. Follow the
+current user's instructions and the host's higher-priority rules. Agent-specific tools,
+permissions, and private memories are not shared across these files.
+
+At the start of work, read the current checkpoint at the top of `docs/where-we-left-off.md`.
+Verify the checkout, branch, HEAD, and working tree before relying on a checkpoint.
+Historical sections are evidence of earlier work, not current instructions.
+
+Before pausing, handing off, or ending a turn that changes project state, update the
+current checkpoint in `docs/where-we-left-off.md`. Include the date and agent, objective,
+completed and unfinished work, branch/commit, uncommitted changes, exact validation
+commands/results and log paths, open questions, standing user constraints, running
+processes, and the next steps in order. Keep that section concise; link detailed reports.
+Never describe uncommitted work as committed or simulated tests as live validation.
+A pause remains a pause until the user resumes the work; saving a handoff is not permission
+to continue implementation. Ask about unresolved product decisions instead of guessing.
+
+Keep one shared handoff file, not separate Claude/Codex/Gemini status files.
+
 ## What this branch is
 
-OpenNOW's GFN client, being turned into a library that our streaming protocol embeds as its "GFN
-client" role. The desktop app is gone. What's left is Rust:
+OpenNOW's GFN client, being turned into a library (`libopennow_gfn.a`) that our streaming
+protocol embeds as its "GFN client" role. The desktop app is gone. What's left is Rust:
 
 - `native/opennow-core/` signs in to NVIDIA, refreshes tokens, stores credentials and runs the
   CloudMatch session lifecycle (create, poll, stop, claim), then builds the session context the
@@ -22,9 +49,47 @@ go as the code they live in is reworked; don't add new ones.
 How the protocol's POP uses this library, the session steps, measured cost and what is left:
 `docs/protocol-integration.md`.
 
-What the library has to do, and the rest of the GFN story, lives in the protocol repo. Start at
-`~/Documents/GitHub/protocol/docs/v2/README.md`; how that project works is in
-`~/Documents/GitHub/protocol/CLAUDE.md` (see `CLAUDE.local.md` if you are Claude).
+## Cross-repo context and reading order
+
+What the library has to do, and the rest of the GFN story, lives in the protocol repo:
+`~/Documents/GitHub/protocol`.
+
+Start by reading `~/Documents/GitHub/protocol/docs/v2/README.md`. It is the live index of the
+v2 design and every GFN document, and it gains a line whenever something new is written, so
+re-read it at the start of each task instead of trusting what you read earlier. Read those
+files where they are; never copy them into this repo, because they keep changing.
+
+Read first, in order:
+1. `~/Documents/GitHub/protocol/docs/v2/DESIGN.md`, the "Four pieces" section: what the GFN client role
+   does and the levers it exposes (frames out tagged with GFN's frame number, audio, cursor, input in,
+   the bandwidth field of the 0x0207 report, 0x0301 invalidation, 0x0302 IDR, 0x0318 max bitrate).
+2. `~/Documents/GitHub/protocol/docs/v2/gfn-barebones.md`: GFN's send and receive path at its simplest.
+3. `~/Documents/GitHub/protocol/docs/gfn-protocol.md` when you need how a mechanism works, and the
+   line-cited files under `~/Documents/GitHub/protocol/gfn-ghidra/` (server/, client/, and the
+   dumps/*.md guides) when you need proof. Never read a dumps/*.c file top to bottom: use its .md guide
+   and grep.
+4. `docs/protocol-integration.md` in this repo: keep it current whenever the library's API, behavior
+   or measured cost changes.
+
+Don't edit anything in the protocol repo except one thing. When you settle something the protocol
+side depends on (the library's API, its threading, what it hands over and when, how each lever is
+applied), write it in `~/Documents/GitHub/protocol/docs/v2/opennow-library.md` and add a line for it to
+`docs/v2/README.md`. That is how this side learns what you decided.
+
+## Standing user rules
+
+- Do the work in the main session. Spawn agents/workflows only with Abhi's explicit
+  agreement to a bounded plan (count, duration and reading scope); never nest spawning.
+  On a stop/pause, cancel and verify every descendant and agent-owned background task
+  before reporting stopped. Do not start a watcher or scheduled continuation unasked.
+- Ask before changing server access/authentication: SSH password/root login, firewall,
+  users or login restrictions. State the concrete change and how to undo it.
+- Before creating/renting billed resources, show the exact provider, hardware, region
+  and hourly price and obtain approval for that purchase.
+- Explain mechanisms or measured results through concrete representative examples
+  with actual numbers. Never invent measurements to illustrate a point.
+- A live session needs a real NVIDIA/GFN account. Static reverse engineering does not
+  establish live negotiated behavior. No live GFN session or capture until Abhi authorizes it.
 
 ## Priorities
 

@@ -244,7 +244,7 @@ static void print_stats(collector_t *c, uint64_t elapsed_us, snapshot_t *last) {
     printf("t=%5" PRIu64 "s video %4.0f pkt/s %6.2f Mbps %3.0f fps | audio %3.0f pkt/s | parity %" PRIu64
            " gaps %" PRIu64 " keyframes %" PRIu64 " | lib %5.2f%% cpu %5.2f us/pkt rss %ld | assemble avg %.0f max %" PRIu64
            " us\n",
-           elapsed_us / 1000000ull, packets / seconds, (double)(now.bytes - last->bytes) * 8.0 / 1e6 / seconds,
+           (uint64_t)(elapsed_us / 1000000ull), packets / seconds, (double)(now.bytes - last->bytes) * 8.0 / 1e6 / seconds,
            (double)(now.access_units - last->access_units) / seconds, (double)(now.audio - last->audio) / seconds,
            (uint64_t)atomic_load(&c->parity_packets), (uint64_t)atomic_load(&c->sequence_gaps),
            (uint64_t)atomic_load(&c->keyframes), cpu_percent,

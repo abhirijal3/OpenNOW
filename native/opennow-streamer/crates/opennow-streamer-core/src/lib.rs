@@ -197,6 +197,7 @@ pub struct Engine {
     captured_input: Arc<CapturedInputQueue>,
     hid_runtime: Arc<HidRuntime>,
     raw_video_tap: Option<RawPacketTap>,
+    nvst_feedback: Option<SharedNvstFeedback>,
 }
 
 #[derive(Debug)]
@@ -232,6 +233,7 @@ impl Engine {
             captured_input: Arc::new(CapturedInputQueue::default()),
             hid_runtime: Arc::new(HidRuntime::new()),
             raw_video_tap: None,
+            nvst_feedback: None,
         }
     }
 
@@ -288,6 +290,7 @@ impl Engine {
             "nvst-unbind" => self.nvst_unbind(command),
             "nvst-send" => self.nvst_send(command),
             "start" => self.start(command),
+            "request-idr" => self.request_idr(&command),
             "anti-afk-pulse" => self.anti_afk_pulse(command),
             "stop" => {
                 self.stop(command.reason.as_deref().unwrap_or("stopped"));
@@ -404,6 +407,14 @@ impl Engine {
             "icePassword": identity.ice_password,
             "dtlsFingerprint": identity.dtls_fingerprint,
         })])
+    }
+
+    fn request_idr(&self, command: &Command) -> Result<Vec<Value>, Value> {
+        let feedback = self.nvst_feedback.as_ref().ok_or_else(|| {
+            error(Some(&command.id), "no-active-session", "IDR request requires an active NVST session")
+        })?;
+        feedback.request_keyframe();
+        Ok(vec![response(&command.id, "ok")])
     }
 
     fn nvst_send(&mut self, command: Command) -> Result<Vec<Value>, Value> {
@@ -710,6 +721,7 @@ impl Engine {
                 mjolnir_control = Some(mjolnir.control());
                 self.nvst_mjolnir_transport = Some(mjolnir);
             }
+            self.nvst_feedback = Some(Arc::clone(&feedback));
             nvst_resources = Some(ActiveNvstResources {
                 bundle: bundle_control,
                 mjolnir: mjolnir_control,
@@ -781,6 +793,7 @@ impl Engine {
                 ));
             }
         }
+        let handoff_response = prepared_nvst.as_ref().map(|p| p.handoff.clone());
         if let Some(prepared) = prepared_nvst {
             match prepared.finish() {
                 Ok(active) => {
@@ -816,6 +829,9 @@ impl Engine {
         ));
         let mut start_response = response(command.id, "ok");
         start_response["transport"] = Value::String("nvst".to_owned());
+        if let Some(handoff) = handoff_response {
+            start_response["handoff"] = handoff;
+        }
         start_response["capabilities"] = json!({
             "supportsInput": nvst_bundle_available,
             "supportsAudio": nvst_audio_negotiated,
@@ -858,6 +874,7 @@ impl Engine {
     }
 
     fn stop_media_resources(&mut self) {
+        self.nvst_feedback = None;
         self.captured_input.clear();
         if let Some(worker) = self.event_worker.take()
             && let Ok(mut reports) = worker.join()
@@ -1937,6 +1954,23 @@ mod tests {
             validate_context(&invalid_media, "start").unwrap_err()["code"],
             "invalid-context"
         );
+    }
+
+    #[test]
+    fn relay_request_idr_is_recognized_and_requires_a_live_feedback_state() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = test_engine(sender);
+        let command = || serde_json::from_value::<Command>(json!({"id":"idr","type":"request-idr"})).unwrap();
+        let (events, running) = engine.handle(command());
+        assert!(running);
+        assert_eq!(events[0]["code"], "no-active-session");
+        let feedback = SharedNvstFeedback::default();
+        engine.nvst_feedback = Some(Arc::clone(&feedback));
+        let (events, running) = engine.handle(command());
+        assert!(running);
+        assert_eq!(events[0]["type"], "ok");
+        engine.stop_media_resources();
+        assert!(engine.nvst_feedback.is_none());
     }
 
     fn unused_udp_port() -> u16 {

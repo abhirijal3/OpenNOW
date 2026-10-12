@@ -5,6 +5,29 @@ Written 2026-10-08 on branch `opennow-library` (abhirijal3/OpenNOW). This is the
 protocol side's view of the same thing is `~/Documents/GitHub/protocol/docs/v2/opennow-library.md`, and the
 design it serves is `~/Documents/GitHub/protocol/docs/v2/DESIGN.md` (index: `docs/v2/README.md` there).
 
+## Live relay status (2026-10-11, Codex)
+
+Abhi authorized resuming the OVH POP and GFN run with the laptop client, then changed
+the source from queued Virginia to India. The first India stream delivered roughly
+60 fps receive/decode with clean authentication, then lost the source after AFK.
+The client window retained the last picture after its network worker exited. Three
+India restarts currently fail upstream HTTP 500; see the current report/checkpoint. The
+engine now accepts `request-idr` through the existing C command API and sets the active
+NVST feedback flag; without an active session it emits `no-active-session`. Feedback is
+cleared on stop. This does not add the other control levers to the ABI.
+
+The current C header still lacks direct key export. The driver provides video master
+material in the RTSPS context, and protocol `v2pop` derives packet keys/salt before sending
+them to the client. `on_media` audio is decrypted primary Opus; the POP seals it with a
+separate downstream audio key and uses PT 111. This fallback is not upstream audio RTP
+pass-through. See the protocol's `docs/v2/DESIGN.md` live integration section and
+`docs/v2/results/gfn-ovh-2026-10-11.md` for measured scope and validation.
+
+`tools/run_live_session.py` is the live orchestration driver. It defaults to no duration
+limit, accepts a private `--relay-key-file`, writes private context and POP logs under
+`--log-dir`, and on SIGTERM stops/reaps the POP, releases the GFN seat, and reaps the core.
+`tools/test_run_live_session.py` covers duration and core cleanup.
+
 ## The shape
 
 v2 is pass-through. GFN's video packets reach the player unchanged except for 9 header bytes the POP
@@ -132,3 +155,14 @@ Open questions on the protocol side that touch this: DESIGN.md's "Four pieces" t
 access units while the code is pass-through; whether the parity line in `wrapping-gfn.md` means forward or
 drop; one loop for many sessions against v1's one process per session; and the terms-of-use question about
 relaying a GFN session.
+
+## Same-seat handover launcher (2026-10-12)
+
+Use tools/run_live_session.py --resume-session-id ID with the existing region/codec/
+resolution/key-file options to reclaim a running official-client game. The launcher
+first uses session.remote.list, requires the exact ID, then calls session.claim and
+polls until ready with resumePending cleared before streamer.prepare. Discovery or
+claim failures never allocate a substitute seat. Normal launcher termination still
+releases its seat, so stale source launchers must not use their cleanup RPC while an
+official client owns that same game. Eight Python regressions cover acquisition and
+cleanup behavior. See protocol's current checkpoint for the live handover state.

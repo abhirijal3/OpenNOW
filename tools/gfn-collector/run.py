@@ -137,6 +137,36 @@ def book(core, auth, app_id, title):
     return session
 
 
+def claim(core, auth, session_id, streaming_base_url=None):
+    params = {"sessionId": session_id}
+    if streaming_base_url:
+        params["streamingBaseUrl"] = streaming_base_url
+    log("listing remote sessions to discover active seat...")
+    _, remotes = core.call("session.remote.list", params)
+    remote_list = remotes.get("sessions", [])
+    log(f"discovered {len(remote_list)} remote session(s)")
+    for s in remote_list:
+        log(f"  remote: id={s.get('sessionId')} app={s.get('appId')} status={s.get('status')} ip={s.get('serverIp')}")
+    request_id, claimed = core.call("session.claim", params)
+    core.send({"type": "ack", "id": request_id})
+    session = claimed["session"]
+    log(f"claimed session {session.get('sessionId')} status {session.get('status')}")
+    last = None
+    while (session.get("status") not in READY_STATUSES or session.get("resumePending")
+           or not session.get("rtspsEndpoints")):
+        state = (session.get("status"), session.get("queuePosition"), session.get("seatSetupStep"), session.get("resumePending"))
+        if state != last:
+            log(f"waiting for resume: status {state[0]} queue {state[1]} setup {state[2]} resumePending {state[3]}")
+            last = state
+        if session.get("phase") == "finished":
+            raise RuntimeError(f"session finished before ready: {json.dumps(session.get('termination'))}")
+        time.sleep(2)
+        _, polled = core.call("session.poll", session)
+        session = polled.get("session") or polled
+    log(f"resumed seat ready on {session.get('serverIp')} ({session.get('gpuType')}, {session.get('zone')})")
+    return session
+
+
 def main():
     parser = argparse.ArgumentParser(description="Book a GFN seat and record its stream headlessly.")
     parser.add_argument("--app-id", default="9029111")
@@ -145,6 +175,9 @@ def main():
     parser.add_argument("--region", default="india")
     parser.add_argument("--seconds", type=int, default=120)
     parser.add_argument("--no-record", action="store_true")
+    parser.add_argument("--no-stop", action="store_true", help="Keep the GFN session active on exit without releasing seat.")
+    parser.add_argument("--resume", default=None, help="Existing session ID to resume instead of booking new seat.")
+    parser.add_argument("--streaming-base-url", default=None, help="CloudMatch streaming base URL for resume.")
     parser.add_argument("--data-dir", default=os.path.expanduser("~/.local/share/opennow-collector"))
     parser.add_argument("--out", default=os.path.join(HERE, "runs", time.strftime("%Y%m%d-%H%M%S")))
     args = parser.parse_args()
@@ -157,23 +190,31 @@ def main():
         auth = sign_in(core, args.provider)
         log(f"signed in as {auth['session']['user'].get('displayName') or auth['session']['user'].get('userId')}")
         pick_region(core, auth, args.region)
-        session = book(core, auth, args.app_id, args.title)
+        if args.resume:
+            session = claim(core, auth, args.resume, args.streaming_base_url)
+        else:
+            session = book(core, auth, args.app_id, args.title)
         _, prepared = core.call("streamer.prepare", {"session": session})
         context_path = os.path.join(args.out, "context.json")
         with open(context_path, "w") as handle:
             json.dump(prepared["context"], handle)
+        session_info_path = os.path.join(args.out, "session_info.json")
+        with open(session_info_path, "w") as handle:
+            json.dump(session, handle, indent=2)
         log(f"collecting for {args.seconds} s into {args.out}")
         command = [COLLECTOR, context_path, args.out, str(args.seconds)]
         if args.no_record:
             command.append("norecord")
         subprocess.run(command, check=False)
     finally:
-        if session is not None:
+        if session is not None and not args.no_stop:
             try:
                 core.call("session.stop", {"sessionId": session["sessionId"]}, timeout=60)
                 log("seat released")
             except Exception as error:
                 log(f"could not release the seat: {error}")
+        elif session is not None and args.no_stop:
+            log(f"session kept alive (--no-stop): sessionId={session.get('sessionId')} streamingBaseUrl={session.get('streamingBaseUrl')}")
         core.close()
 
 

@@ -51,8 +51,7 @@ fallback-sessions/
 # Test files
 test/
 
-# AI Agent guidelines (local only)
-AGENTS.md
+# Release notes
 release-notes.md
 
 # Nix

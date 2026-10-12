@@ -73,7 +73,7 @@ OpennowGfn *opennow_gfn_create(const OpennowGfnCallbacks *callbacks);
  * Runs one engine command, given as JSON: {"id","type",...}. Types are hello
  * (protocolVersion 7), nvst-bind, nvst-unbind, nvst-send, start (context: the
  * session context from opennow-core's streamer.prepare), anti-afk-pulse,
- * stop and shutdown. Responses arrive through on_event. Blocks until the
+ * request-idr (active NVST session), stop and shutdown. Responses arrive through on_event. Blocks until the
  * command finishes; start can take seconds.
  *
  * Returns 0 when the command ran, -1 for a NULL handle or malformed JSON.
@@ -86,6 +86,7 @@ int32_t opennow_gfn_command(OpennowGfn *gfn, const uint8_t *json, size_t len);
  */
 int32_t opennow_gfn_key(OpennowGfn *gfn, uint16_t virtual_key, uint16_t modifiers, uint8_t pressed);
 int32_t opennow_gfn_mouse_move(OpennowGfn *gfn, int16_t delta_x, int16_t delta_y);
+int32_t opennow_gfn_mouse_abs(OpennowGfn *gfn, uint16_t x, uint16_t y, uint16_t width, uint16_t height);
 int32_t opennow_gfn_mouse_button(OpennowGfn *gfn, uint8_t button, uint8_t pressed);
 int32_t opennow_gfn_mouse_wheel(OpennowGfn *gfn, int16_t delta_x, int16_t delta_y);
 int32_t opennow_gfn_gamepad(OpennowGfn *gfn, const OpennowGfnGamepad *pad);

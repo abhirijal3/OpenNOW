@@ -1139,9 +1139,16 @@ fn prepare_on_endpoint(
             "DESCRIBE did not return NVST ICE credentials",
         )
     })?;
-    let (key, key_id) = match runtime_key(&describe.body) {
-        Some(value) => value,
-        None => random_runtime_key()?,
+    let (key, key_id) = if let (Some(k), Some(id)) = (
+        context.settings.get("srtpAesKeyHex").and_then(Value::as_str),
+        context.settings.get("srtpKeyId").and_then(Value::as_u64),
+    ) {
+        (k.to_ascii_uppercase(), id as u32)
+    } else {
+        match runtime_key(&describe.body) {
+            Some(value) => value,
+            None => random_runtime_key()?,
+        }
     };
     let salt = format!("{key_id:024X}");
     let codec = negotiated_codec(context);

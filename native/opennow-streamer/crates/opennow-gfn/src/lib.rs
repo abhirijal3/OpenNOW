@@ -226,6 +226,25 @@ pub unsafe extern "C" fn opennow_gfn_mouse_move(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_mouse_abs(
+    gfn: *mut OpennowGfn,
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+) -> i32 {
+    push_input(
+        gfn,
+        CapturedInput::MouseAbsolute {
+            x,
+            y,
+            width,
+            height,
+        },
+    )
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn opennow_gfn_mouse_button(
     gfn: *mut OpennowGfn,
     button: u8,
