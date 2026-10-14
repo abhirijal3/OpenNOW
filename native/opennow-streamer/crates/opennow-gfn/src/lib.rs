@@ -199,6 +199,160 @@ pub unsafe extern "C" fn opennow_gfn_command(
     0
 }
 
+pub type OpennowGfnAudioFn = Option<unsafe extern "C" fn(*mut c_void, *const u8, usize, *const u8, *const u8, u8)>;
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_set_audio_callback(gfn: *mut OpennowGfn,
+    callback: OpennowGfnAudioFn, user: *mut c_void) -> i32 {
+    let Some(gfn) = (unsafe { gfn.as_ref() }) else { return -1; };
+    let mut guard = gfn.engine.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(engine) = guard.as_mut() else { return -1; };
+    let cookie = user as usize;
+    engine.set_raw_audio_tap(callback.map(|cb| -> opennow_streamer_core::RawAudioTap {
+        Arc::new(move |bytes, keys| unsafe { cb(cookie as *mut c_void, bytes.as_ptr(), bytes.len(), keys.key.as_ptr(), keys.salt.as_ptr(), keys.profile) })
+    }));
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_set_control_callback(
+    gfn: *mut OpennowGfn, callback: OpennowGfnBytesFn, user: *mut c_void,
+) -> i32 {
+    let Some(gfn) = (unsafe { gfn.as_ref() }) else { return -1; };
+    let mut guard = gfn.engine.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(engine) = guard.as_mut() else { return -1; };
+    let cookie = user as usize;
+    engine.set_raw_control_tap(callback.map(|cb| -> opennow_streamer_core::RawPacketTap {
+        Arc::new(move |bytes| unsafe { cb(cookie as *mut c_void, bytes.as_ptr(), bytes.len()) })
+    }));
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_set_player_feedback(gfn: *mut OpennowGfn, enabled: u8) -> i32 {
+    let Some(gfn) = (unsafe { gfn.as_ref() }) else { return -1; };
+    let guard = gfn.engine.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    match guard.as_ref().and_then(|e| e.set_player_feedback(enabled != 0).ok()) {
+        Some(()) => 0, None => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_send_control(gfn: *mut OpennowGfn, bytes: *const u8, len: usize) -> i32 {
+    let Some(gfn) = (unsafe { gfn.as_ref() }) else { return -1; };
+    if bytes.is_null() || !(4..=768).contains(&len) { return -1; }
+    let bytes = unsafe { std::slice::from_raw_parts(bytes, len) };
+    let Ok(guard) = gfn.engine.try_lock() else { return -1; };
+    match guard.as_ref().and_then(|e| e.send_native_control(bytes).ok()) {
+        Some(()) => 0, None => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_player_profile(gfn:*mut OpennowGfn, out:*mut u8, cap:usize)->i32 {
+    let Some(gfn) = (unsafe {gfn.as_ref()}) else {return -1};
+    if out.is_null() || cap<40 {return -1}
+    let Ok(guard) = gfn.engine.try_lock() else {return -1};
+    let Some(profile) = guard.as_ref().and_then(|e|e.native_player_profile()) else {return -1};
+    unsafe {std::ptr::copy_nonoverlapping(profile.as_ptr(),out,40)};40
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_player_timing(gfn:*mut OpennowGfn, out:*mut u8, cap:usize)->i32 {
+    let Some(gfn) = (unsafe {gfn.as_ref()}) else {return -1};
+    if out.is_null() || cap<12 {return -1}
+    let Ok(guard) = gfn.engine.try_lock() else {return -1};
+    let Some(bytes) = guard.as_ref().and_then(|e|e.native_player_timing()) else {return -1};
+    unsafe {std::ptr::copy_nonoverlapping(bytes.as_ptr(),out,12)};12
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_upstream_rtt_us(gfn: *mut OpennowGfn) -> u32 {
+    let Some(gfn) = (unsafe { gfn.as_ref() }) else { return 0; };
+    let Ok(guard) = gfn.engine.try_lock() else { return 0; };
+    guard.as_ref().and_then(|e| e.upstream_rtt_us()).unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_send_control_deadline(gfn: *mut OpennowGfn,
+    bytes: *const u8, len: usize, lifetime_us: u32) -> i32 {
+    let Some(gfn) = (unsafe { gfn.as_ref() }) else { return -1; };
+    if bytes.is_null() || !(4..=768).contains(&len) { return -1; }
+    let bytes = unsafe { std::slice::from_raw_parts(bytes, len) };
+    let Ok(guard) = gfn.engine.try_lock() else { return -1; };
+    match guard.as_ref().and_then(|e| e.send_native_control_deadline(bytes, lifetime_us).ok()) {
+        Some(()) => 0, None => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_microphone_available(gfn: *mut OpennowGfn) -> i32 {
+    let Some(gfn) = (unsafe { gfn.as_ref() }) else { return -1; };
+    let Ok(guard) = gfn.engine.try_lock() else { return -1; };
+    i32::from(guard.as_ref().is_some_and(|engine| engine.microphone_available()))
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_microphone_enable(gfn: *mut OpennowGfn, enabled: u8) -> i32 {
+    let Some(gfn) = (unsafe { gfn.as_ref() }) else { return -1; };
+    let Ok(guard) = gfn.engine.try_lock() else { return -1; };
+    match guard.as_ref().and_then(|engine| engine.set_microphone_enabled(enabled != 0).ok()) {
+        Some(()) => 0, None => -1,
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_microphone_opus(gfn: *mut OpennowGfn, opus: *const u8,
+    len: usize, rtp_timestamp: u32) -> i32 {
+    let Some(gfn) = (unsafe { gfn.as_ref() }) else { return -1; };
+    if opus.is_null() || !(1..=1275).contains(&len) { return -1; }
+    let Ok(guard) = gfn.engine.try_lock() else { return -1; };
+    let payload = unsafe { std::slice::from_raw_parts(opus, len) }.to_vec();
+    match guard.as_ref().and_then(|engine| engine.send_microphone_opus(payload, rtp_timestamp).ok()) {
+        Some(()) => 0, None => -1,
+    }
+}
+
+fn push_input_at(gfn: *mut OpennowGfn, input: CapturedInput, timestamp_us: u64) -> i32 {
+    let Some(gfn) = (unsafe { gfn.as_ref() }) else { return -1; };
+    gfn.input.push_sample(opennow_streamer_core::CapturedInputSample {
+        input, captured_at: std::time::Instant::now(), source_timestamp_us: Some(timestamp_us),
+    });
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_key_at(gfn: *mut OpennowGfn, virtual_key: u16, modifiers: u16,
+    pressed: u8, timestamp_us: u64) -> i32 {
+    push_input_at(gfn, CapturedInput::Key { virtual_key, modifiers, pressed: pressed != 0 }, timestamp_us)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_mouse_move_at(gfn: *mut OpennowGfn, delta_x: i16, delta_y: i16,
+    timestamp_us: u64) -> i32 {
+    push_input_at(gfn, CapturedInput::MouseMove { delta_x, delta_y }, timestamp_us)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_mouse_abs_at(gfn: *mut OpennowGfn, x: u16, y: u16,
+    width: u16, height: u16, timestamp_us: u64) -> i32 {
+    push_input_at(gfn, CapturedInput::MouseAbsolute { x, y, width, height }, timestamp_us)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_mouse_button_at(gfn: *mut OpennowGfn, button: u8,
+    pressed: u8, timestamp_us: u64) -> i32 {
+    push_input_at(gfn, CapturedInput::MouseButton { button, pressed: pressed != 0 }, timestamp_us)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_mouse_wheel_at(gfn: *mut OpennowGfn, delta_x: i16,
+    delta_y: i16, timestamp_us: u64) -> i32 {
+    push_input_at(gfn, CapturedInput::MouseWheel { delta_x, delta_y }, timestamp_us)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_gamepad_at(gfn: *mut OpennowGfn, pad: *const OpennowGfnGamepad,
+    timestamp_us: u64) -> i32 {
+    let Some(pad) = (unsafe { pad.as_ref() }) else { return -1; };
+    push_input_at(gfn, CapturedInput::Gamepad { controller_id: pad.controller_id, bitmap: pad.bitmap,
+        buttons: pad.buttons, left_trigger: pad.left_trigger, right_trigger: pad.right_trigger,
+        left_stick_x: pad.left_stick_x, left_stick_y: pad.left_stick_y,
+        right_stick_x: pad.right_stick_x, right_stick_y: pad.right_stick_y }, timestamp_us)
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn opennow_gfn_key(
     gfn: *mut OpennowGfn,
@@ -345,6 +499,47 @@ mod tests {
     }
 
     #[test]
+    fn player_timing_abi_rejects_missing_session_and_small_output_without_writes() {
+        let seen=Seen::default();let gfn=unsafe {opennow_gfn_create(&callbacks(&seen))};assert!(!gfn.is_null());
+        let mut out=[0xa5u8;12];
+        unsafe {
+            assert_eq!(opennow_gfn_player_timing(ptr::null_mut(),out.as_mut_ptr(),12),-1);
+            assert_eq!(opennow_gfn_player_timing(gfn,ptr::null_mut(),12),-1);
+            assert_eq!(opennow_gfn_player_timing(gfn,out.as_mut_ptr(),11),-1);
+            assert_eq!(opennow_gfn_player_timing(gfn,out.as_mut_ptr(),12),-1);
+            opennow_gfn_destroy(gfn);
+        }
+        assert_eq!(out,[0xa5u8;12]);
+    }
+
+    #[test]
+    fn timed_input_abi_keeps_each_producer_timestamp_and_null_is_rejected() {
+        let seen = Seen::default();
+        let gfn = unsafe { opennow_gfn_create(&callbacks(&seen)) };
+        assert!(!gfn.is_null());
+        let pad = OpennowGfnGamepad { controller_id: 0, bitmap: 1, buttons: 0,
+            left_trigger: 10, right_trigger: 20, left_stick_x: 1, left_stick_y: 2,
+            right_stick_x: 3, right_stick_y: 4 };
+        unsafe {
+            assert_eq!(opennow_gfn_key_at(gfn, 0x41, 0, 1, 1001), 0);
+            assert_eq!(opennow_gfn_mouse_move_at(gfn, 2, -3, 1002), 0);
+            assert_eq!(opennow_gfn_mouse_abs_at(gfn, 10, 20, 100, 100, 1003), 0);
+            assert_eq!(opennow_gfn_mouse_button_at(gfn, 1, 1, 1004), 0);
+            assert_eq!(opennow_gfn_mouse_wheel_at(gfn, 0, 120, 1005), 0);
+            assert_eq!(opennow_gfn_gamepad_at(gfn, &pad, 1006), 0);
+            assert_eq!(opennow_gfn_key_at(ptr::null_mut(), 0x41, 0, 1, 1), -1);
+            assert_eq!(opennow_gfn_mouse_move_at(ptr::null_mut(), 1, 1, 1), -1);
+            assert_eq!(opennow_gfn_mouse_abs_at(ptr::null_mut(), 1, 1, 10, 10, 1), -1);
+            assert_eq!(opennow_gfn_mouse_button_at(ptr::null_mut(), 1, 1, 1), -1);
+            assert_eq!(opennow_gfn_mouse_wheel_at(ptr::null_mut(), 0, 1, 1), -1);
+            assert_eq!(opennow_gfn_gamepad_at(gfn, ptr::null(), 1), -1);
+        }
+        let input = unsafe { &*gfn }.input.clone();
+        for ts in 1001..=1006 { assert_eq!(input.take_sample().unwrap().source_timestamp_us, Some(ts)); }
+        unsafe { opennow_gfn_destroy(gfn) };
+    }
+
+    #[test]
     fn hello_answers_through_the_event_callback() {
         let seen = Seen::default();
         let gfn = unsafe { opennow_gfn_create(&callbacks(&seen)) };
@@ -378,6 +573,22 @@ mod tests {
         assert!(unsafe { opennow_gfn_create(ptr::null()) }.is_null());
         unsafe { opennow_gfn_destroy(gfn) };
         unsafe { opennow_gfn_destroy(ptr::null_mut()) };
+    }
+
+    #[test]
+    fn microphone_abi_rejects_invalid_and_unnegotiated_source() {
+        let seen=Seen::default();
+        let gfn=unsafe {opennow_gfn_create(&callbacks(&seen))};
+        let opus=[0xf8,0xff,0xfe];
+        assert_eq!(unsafe {opennow_gfn_microphone_available(std::ptr::null_mut())},-1);
+        assert_eq!(unsafe {opennow_gfn_microphone_enable(std::ptr::null_mut(),1)},-1);
+        assert_eq!(unsafe {opennow_gfn_microphone_opus(std::ptr::null_mut(),opus.as_ptr(),3,0)},-1);
+        assert_eq!(unsafe {opennow_gfn_microphone_available(gfn)},0);
+        assert_eq!(unsafe {opennow_gfn_microphone_enable(gfn,1)},-1);
+        for len in [0,1276,usize::MAX] { assert_eq!(unsafe {opennow_gfn_microphone_opus(gfn,opus.as_ptr(),len,0)},-1); }
+        assert_eq!(unsafe {opennow_gfn_microphone_opus(gfn,std::ptr::null(),3,0)},-1);
+        assert_eq!(unsafe {opennow_gfn_microphone_opus(gfn,opus.as_ptr(),3,960)},-1);
+        unsafe {opennow_gfn_destroy(gfn)};
     }
 
     #[test]

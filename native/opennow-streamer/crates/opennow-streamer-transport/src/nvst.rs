@@ -605,6 +605,7 @@ impl RecentNetworkMetrics {
 
 #[derive(Debug)]
 pub struct NvstFeedbackState {
+    pub player: crate::nvst_player::PlayerFeedback,
     pub haptics: crate::NvstHaptics,
     /// Bound video stream SSRC (0 until the first packet is authenticated).
     video_ssrc: AtomicU32,
@@ -637,6 +638,7 @@ impl Default for NvstFeedbackState {
     fn default() -> Self {
         Self {
             haptics: crate::NvstHaptics::default(),
+            player: crate::nvst_player::PlayerFeedback::default(),
             video_ssrc: AtomicU32::new(0),
             highest_sequence: AtomicU32::new(0),
             base_sequence: AtomicU32::new(u32::MAX),
@@ -724,6 +726,12 @@ impl NvstFeedbackState {
         *sample
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((now, elapsed));
+    }
+
+    pub fn video_rtt_us(&self, now: Instant) -> Option<u32> {
+        self.video_ping.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .filter(|(received, _)| now.saturating_duration_since(*received) < STREAM_PING_TIMEOUT)
+            .map(|(_, rtt)| rtt.as_micros().clamp(1,u128::from(u32::MAX)) as u32)
     }
 
     pub fn ping_ms(&self, now: Instant) -> Option<f64> {
@@ -1374,6 +1382,9 @@ pub struct NvstVideoConfig {
     /// Feedback plane shared with the ICE/DTLS bundle (cloned configs share it).
     feedback: SharedNvstFeedback,
     raw_video_tap: Option<RawPacketTap>,
+    raw_control_tap: Option<RawPacketTap>,
+    raw_audio_tap: Option<RawAudioTap>,
+    player_profile: [u8;40],
     header_only: bool,
 }
 
@@ -1804,6 +1815,10 @@ impl NvstVideoConfig {
             video_packet_size,
             feedback: Arc::new(NvstFeedbackState::default()),
             raw_video_tap: None,
+            raw_control_tap: None,
+            raw_audio_tap: None,
+            player_profile: crate::nvst_profile::player_profile(handoff, qos_timings_v5)
+                .map_err(|field|NvstConfigError::OutOfRange{field})?,
             header_only: false,
         })
     }
@@ -1876,6 +1891,21 @@ impl NvstVideoConfig {
 
     pub fn with_header_only(mut self, on: bool) -> Self {
         self.header_only = on;
+        self
+    }
+
+    pub fn player_profile(&self) -> [u8;40] {self.player_profile}
+    pub fn player_timing_event(&self) -> [u8;12] {
+        let mut bytes = [0u8;12]; bytes[..4].copy_from_slice(&[0x12,1,8,0]);
+        bytes[8] = u8::from(self.frame_pacing_feedback); bytes
+    }
+
+    pub fn with_raw_audio_tap(mut self, tap: RawAudioTap) -> Self {
+        self.raw_audio_tap = Some(tap); self
+    }
+
+    pub fn with_raw_control_tap(mut self, tap: RawPacketTap) -> Self {
+        self.raw_control_tap = Some(tap);
         self
     }
 
@@ -5373,6 +5403,10 @@ impl NvstUdpReceiverControl {
             .map_err(|_| TransportError::Closed)
     }
 
+    pub fn microphone_available(&self) -> bool {
+        self.microphone.lock().map(|queue| queue.available()).unwrap_or(false)
+    }
+
     pub fn set_microphone_enabled(&self, enabled: bool) -> Result<(), NvstUdpReceiverError> {
         self.microphone
             .lock()
@@ -5653,6 +5687,7 @@ fn create_nvst_bundle_rtc(socket: &UdpSocket) -> Result<Rtc, NvstUdpReceiverErro
     // Official GenerateIceCredentials() is 4-char ufrag / 22-char password.
     // str0m's default 16-char ufrag is rejected by Bifrost length checks.
     let mut rtc_config = RtcConfig::new()
+        .set_crypto_provider(crate::nvst_keyexport::provider())
         .set_rtp_mode(true)
         .set_stats_interval(Some(Duration::from_secs(1)))
         .set_send_buffer_audio(MICROPHONE_QUEUE_CAPACITY);
@@ -6803,6 +6838,8 @@ fn run_nvst_webrtc_bundle(
     let mut ice_responses = IceResponseTracker::default();
     let mut ice_ping_responses = 0;
     let mut last_hole_punch = Instant::now() - PING_INTERVAL_BEFORE_CONNECTION;
+    let mut raw_audio = crate::nvst_audio_raw::RawAudioPackets::default();
+    let receive_keys = crate::nvst_keyexport::for_fingerprint(&rtc.direct_api().local_dtls_fingerprint().bytes);
     let mut audio_streams = NvstAudioStreams::default();
     let mut dtls_ready = false;
     let mut microphone_generation = 0;
@@ -6820,6 +6857,7 @@ fn run_nvst_webrtc_bundle(
     let mut last_keyframe_attempt_log: Option<Instant> = None;
     let mut rtcp_reports_sent = 0_u64;
     let mut control_reports = ControlReportBatch::new(Instant::now(), max_control_report_bytes);
+    let mut player_generation = feedback.player.generation();
     let mut last_frame_pacing_send = Instant::now() - FRAME_PACING_INTERVAL;
     let control_stats_origin = Instant::now();
     let mut last_control_stats_log = Instant::now();
@@ -7132,7 +7170,25 @@ fn run_nvst_webrtc_bundle(
             last_hole_punch = now;
         }
 
+        let generation = feedback.player.generation();
+        if generation != player_generation {
+            control_reports.bytes.clear();
+            control_reports.frames.clear();
+            control_reports.qos = None;
+            control_reports.queued_at = None;
+            player_generation = generation;
+        }
+        if feedback.player.active() {
+            feedback.pending_frame_acks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+            if upstream_allowed && let Some(channels) = input_channels {
+                feedback.player.flush(now, |route, bytes| match route {
+                    crate::nvst_player::NativeRoute::Reliable => channels.send_control(&mut rtc, bytes),
+                    crate::nvst_player::NativeRoute::Partial => control_partial_open && channels.send_partial_control(&mut rtc, bytes),
+                });
+            }
+        }
         if upstream_allowed
+            && !feedback.player.active()
             && control_partial_open
             && let Some(channels) = input_channels
         {
@@ -7439,6 +7495,14 @@ fn run_nvst_webrtc_bundle(
                     }
                     Event::ChannelData(data) => {
                         if let Some(channels) = input_channels
+                            && (data.id == channels.control_reliable || data.id == channels.control_partial)
+                        {
+                            crate::nvst_player::incoming_commands(&data.data, |bytes| {
+                                feedback.player.observe_timing(bytes);
+                                if let Some(tap)=receiver.config.raw_control_tap.as_ref() {tap(bytes);}
+                            });
+                        }
+                        if let Some(channels) = input_channels
                             && channels.contains(data.id)
                         {
                             let label = channels.label(data.id);
@@ -7468,7 +7532,7 @@ fn run_nvst_webrtc_bundle(
                                 server_cursor_messages(&data.data)
                             };
                             for message in cursor_messages {
-                                cursor_capture.notify(Instant::now());
+                                cursor_capture.notify_native(Instant::now(),&message);
                                 eprintln!(
                                     "NVST cursor wire rx: channel={label} id={:?} command=0x{:04x} offset={} cursorId={:?} position={:?} visible={:?} bytes={} raw={}",
                                     data.id,
@@ -7570,6 +7634,10 @@ fn run_nvst_webrtc_bundle(
                         });
                         if is_audio {
                             audio_streams.authenticated(&mut rtc, *packet.header.ssrc);
+                            if let Some(tap) = receiver.config.raw_audio_tap.as_ref()
+                                && let Some(keys) = receive_keys.as_ref().and_then(|k|k.snapshot()) {
+                                raw_audio.authenticated(*packet.header.ssrc, packet.header.sequence_number, |bytes| tap(bytes, &keys));
+                            }
                             let audio = audio_track.as_ref().expect("audio track checked above");
                             let received_at_us = packet
                                 .timestamp
@@ -7713,6 +7781,9 @@ fn run_nvst_webrtc_bundle(
                             }))
                     {
                         continue;
+                    }
+                    if looks_like_rtp(&datagram[..length]) && receiver.config.raw_audio_tap.is_some() {
+                        raw_audio.stage(&datagram[..length]);
                     }
                     let destination = receive_destination;
                     let contents = match datagram[..length].try_into() {
@@ -9141,12 +9212,14 @@ mod tests {
                 .unwrap()
                 .frame_pacing_feedback
         );
+        assert_eq!(NvstVideoConfig::from_legacy_handoff(&handoff,None).unwrap().player_timing_event(), [0x12,1,8,0,0,0,0,0,1,0,0,0]);
         handoff["framePacingFeedbackMode"] = serde_json::json!(0);
         assert!(
             !NvstVideoConfig::from_legacy_handoff(&handoff, None)
                 .unwrap()
                 .frame_pacing_feedback
         );
+        assert_eq!(NvstVideoConfig::from_legacy_handoff(&handoff,None).unwrap().player_timing_event(), [0x12,1,8,0,0,0,0,0,0,0,0,0]);
         handoff["framePacingFeedbackMode"] = serde_json::json!(2);
         assert!(matches!(
             NvstVideoConfig::from_legacy_handoff(&handoff, None),
@@ -9618,11 +9691,27 @@ mod tests {
             to: &mut Rtc,
             now: Instant,
             received: &mut Vec<str0m::rtp::RtpPacket>,
+            exported: &mut Option<SrtpReceiver>,
         ) {
             loop {
                 match from.poll_output().unwrap() {
                     Output::Timeout(_) => break,
                     Output::Transmit(packet) => {
+                        let bytes=packet.contents.as_ref();
+                        if bytes.len()>=12 && bytes[0]&0xc0==0x80 && bytes[1]&0x7f==111 {
+                            if exported.is_none() {
+                                let fp=to.direct_api().local_dtls_fingerprint().bytes.clone();
+                                let keys=crate::nvst_keyexport::for_fingerprint(&fp).unwrap().snapshot().unwrap();
+                                let cipher=if keys.profile==0 {
+                                    SrtpCipher::AeadAes256Gcm { encryption_key:keys.key,session_salt:keys.salt,authentication_tag_len:16 }
+                                } else {
+                                    SrtpCipher::AeadAes128Gcm { encryption_key:keys.key[..16].try_into().unwrap(),session_salt:keys.salt,authentication_tag_len:16 }
+                                };
+                                *exported=Some(SrtpReceiver {cipher,replay:ReplayWindow::default()});
+                            }
+                            let plain=exported.as_mut().unwrap().unprotect(bytes).expect("exported receive key authenticates peer ciphertext");
+                            assert_eq!(plain.header.payload(&plain.plaintext).unwrap(), &[0xf8,0xff,0xfe]);
+                        }
                         to.handle_input(Input::Receive(
                             now,
                             Receive {
@@ -9676,6 +9765,7 @@ mod tests {
         let origin = Instant::now();
         let mut microphone_packets = Vec::new();
         let mut downlink_packets = Vec::new();
+        let mut local_export=None; let mut remote_export=None;
         for tick in 0..2000 {
             let now = origin + Duration::from_millis(tick);
             local.handle_input(Input::Timeout(now)).unwrap();
@@ -9720,8 +9810,8 @@ mod tests {
                         vec![0xf8, 0xff, 0xfe],
                     ));
             }
-            exchange(&mut local, &mut remote, now, &mut downlink_packets);
-            exchange(&mut remote, &mut local, now, &mut microphone_packets);
+            exchange(&mut local, &mut remote, now, &mut downlink_packets, &mut remote_export);
+            exchange(&mut remote, &mut local, now, &mut microphone_packets, &mut local_export);
         }
         for packets in [&microphone_packets, &downlink_packets] {
             assert_eq!(packets.len(), 2);
@@ -12795,6 +12885,15 @@ mod tests {
             api.start_dtls(false).unwrap();
         }
         let mut config = config();
+        let feedback=config.feedback();
+        if accept_play {feedback.player.set_active(true);}
+        let incoming=Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let captured=Arc::clone(&incoming);
+        config.raw_control_tap=Some(Arc::new(move |b| captured.lock().unwrap().push(b.to_vec())));
+        let qos_info=vec![1,1,16,0,0,0,0,0,0,0,0,0,35,0,0,0,0,0,0,0];
+        let outcome=vec![2,1,4,0,7,2,0,0];
+        let mut video_qos=vec![0;56];video_qos[..5].copy_from_slice(&[7,2,52,0,7]);video_qos[55]=0x55;
+        let mut audio_qos=vec![0;128];audio_qos[..5].copy_from_slice(&[2,2,124,0,4]);audio_qos[127]=0x33;
         config.client_udp_port = client_addr.port();
         config.video_peer = server_addr;
         config.remote_dtls_fingerprint = Some(server_identity.dtls_fingerprint);
@@ -12854,6 +12953,8 @@ mod tests {
                             .unwrap()
                             .write(true, &[0x0e, 0x02, 0x02, 0x00])
                             .unwrap();
+                        assert!(server_rtc.channel(id).unwrap().write(true,&qos_info).unwrap());
+                        assert!(server_rtc.channel(id).unwrap().write(true,&outcome).unwrap());
                     }
                     Output::Event(Event::ChannelData(data)) => app_messages.push(data.data),
                     _ => {}
@@ -12908,7 +13009,9 @@ mod tests {
         if accept_play {
             play_sender.try_send(()).unwrap();
             let until = Instant::now() + Duration::from_secs(2);
-            while Instant::now() < until && (!input_ready || app_messages.is_empty()) {
+            let mut queued=false;
+            let mut qos_queued=Instant::now()-Duration::from_millis(50);
+            while Instant::now() < until && (!input_ready || !app_messages.contains(&video_qos) || !app_messages.contains(&audio_qos)) {
                 let now = Instant::now();
                 if let Ok((length, _)) = server.recv_from(&mut packet)
                     && !looks_like_stun(&packet[..length])
@@ -12939,6 +13042,13 @@ mod tests {
                 while let Ok(event) = event_receiver.try_recv() {
                     input_ready |= matches!(event, NvstReceiveEvent::InputReady(2));
                 }
+                if input_ready && !queued {
+                    feedback.player.enqueue(&audio_qos,Instant::now()).unwrap();
+                    queued=true;
+                }
+                if input_ready && !app_messages.contains(&video_qos) && qos_queued.elapsed()>=Duration::from_millis(50) {
+                    feedback.player.enqueue(&video_qos,Instant::now()).unwrap();qos_queued=Instant::now();
+                }
             }
             assert!(input_ready, "accepted PLAY must publish input readiness");
             assert!(
@@ -12964,6 +13074,12 @@ mod tests {
             assert!(stopped, "failed PLAY must stop the bundle worker");
             assert!(!session.input_ready.load(Ordering::Acquire));
             assert!(app_messages.is_empty());
+        }
+        if accept_play {
+            assert!(app_messages.contains(&video_qos), "fresh player QoS must reach the partial SCTP channel");
+            assert_eq!(app_messages.iter().filter(|b|*b==&audio_qos).count(),1);
+            let controls=incoming.lock().unwrap();
+            assert!(controls.contains(&qos_info));assert!(controls.contains(&outcome));
         }
         session.stop();
     }
@@ -13164,3 +13280,5 @@ impl BoundedFrameQueue {
         self.dropped_frames
     }
 }
+
+pub type RawAudioTap = Arc<dyn Fn(&[u8], &crate::nvst_keyexport::AudioKeys) + Send + Sync + 'static>;

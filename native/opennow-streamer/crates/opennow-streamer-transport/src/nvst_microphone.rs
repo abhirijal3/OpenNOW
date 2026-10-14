@@ -39,6 +39,8 @@ impl MicrophoneQueue {
         self.frames.clear();
     }
 
+    pub fn available(&self) -> bool { self.available && !self.closed }
+
     pub fn set_enabled(&mut self, enabled: bool) -> Result<(), NvstUdpReceiverError> {
         self.clear();
         self.generation = self.generation.wrapping_add(1);

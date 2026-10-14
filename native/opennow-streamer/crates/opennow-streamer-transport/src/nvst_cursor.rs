@@ -61,6 +61,10 @@ impl NvstCursorCapture {
         self.state = CaptureState::Inactive;
     }
 
+    pub(crate) fn notify_native(&mut self, now: Instant, message: &crate::nvst_input::NvstServerCursorMessage) {
+        if message.normalized.is_some() { self.notify(now); }
+    }
+
     pub(crate) fn notify(&mut self, now: Instant) {
         if matches!(self.state, CaptureState::Waiting { .. }) {
             self.state = CaptureState::Disabling {
@@ -153,10 +157,16 @@ mod tests {
         let now = Instant::now();
         let mut capture = NvstCursorCapture::default();
         capture.activate(now);
-        for length in 0..8_u8 {
+        for length in 0..13_u8 {
             let mut bytes = vec![0x10, 0x01, length, 0];
             bytes.resize(4 + usize::from(length), 0);
-            assert!(crate::nvst_input::server_cursor_messages(&bytes).is_empty());
+            // A zero bitmap count is a valid cached-ID update, not truncation.
+            // Declare one bitmap byte to test an incomplete image header/body.
+            if length >= 6 { bytes[8] = 1; }
+            for message in crate::nvst_input::server_cursor_messages(&bytes) {
+                assert!(message.normalized.is_none());
+                capture.notify_native(now,&message);
+            }
         }
         assert!(!capture.update(now, |_| panic!("no valid notification")));
     }
@@ -190,8 +200,12 @@ mod tests {
         ]);
         assert_eq!(messages.len(), 1);
         for message in messages {
-            assert_eq!(message.normalized, None);
-            assert_eq!(message.visible, None);
+            assert_eq!(message.cursor_id, Some(0xefbeadde));
+            assert_eq!(message.visible, Some(true));
+            assert_eq!(
+                message.normalized,
+                Some(vec![1, 0xde, 0xad, 0xbe, 0xef, 0, 0, 0, 0])
+            );
             capture.notify(now);
         }
         assert!(capture.update(now, |command| {

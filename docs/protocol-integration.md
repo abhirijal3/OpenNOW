@@ -7,6 +7,17 @@ design it serves is `~/Documents/GitHub/protocol/docs/v2/DESIGN.md` (index: `doc
 
 ## Live relay status (2026-10-11, Codex)
 
+2026-10-13 timing bridge addition (local tests, no new live run): the C ABI now
+exports `opennow_gfn_player_timing(gfn,out,cap)`, returning the complete 12-byte
+0x0112 config or -1 without modifying output on failure. Server-validated
+stream-zero enable/disable overrides the startup seed and persists across player
+takeover; a new session uses a new feedback instance. POP sends config after
+the profile, then forwards subsequent server control events. Player-owned
+0x0203 version 3 is checked for exact count/length (1..16 records) and sent
+on the partial channel. Real decode/render/display measurements belong to
+the player; unknown stages are not filled by OpenNOW. See protocol's
+`docs/v2/opennow-library.md`, `packet-map.md` and Windows seven-mode audit.
+
 Abhi authorized resuming the OVH POP and GFN run with the laptop client, then changed
 the source from queued Virginia to India. The first India stream delivered roughly
 60 fps receive/decode with clean authentication, then lost the source after AFK.
@@ -166,3 +177,29 @@ claim failures never allocate a substitute seat. Normal launcher termination sti
 releases its seat, so stale source launchers must not use their cleanup RPC while an
 official client owns that same game. Eight Python regressions cover acquisition and
 cleanup behavior. See protocol's current checkpoint for the live handover state.
+
+
+## Relayed input timestamps and microphone (2026-10-13, Codex)
+
+The protocol/Moonlight input implementation adds six typed `_at` C ABI calls with
+u64 producer microseconds. `CapturedInputSample.source_timestamp_us` carries
+that source clock through the engine queue into NVST serialization; normal Rust
+input still uses its local captured_at/session-origin mapping. Untimed C APIs
+remain available. POP receipt/liveness uses a separate clock. This is source-time
+preservation, not a live NVIDIA timing interpretation claim.
+
+Three typed microphone calls expose negotiated availability (0/1, or -1 for
+invalid/busy), enable/mute (0 accepted/-1 rejected) and opaque Opus submission
+(1..1275 bytes plus 48 kHz RTP timestamp, 0 accepted/-1 rejected). They use the
+existing bounded 5-frame/100 ms microphone queue and negotiated RTP/SRTP sender;
+no new codec on the POP. The negotiated microphone mode and remote SDP still
+must support it. Admission does not prove delivery to a seat. Source disable
+clears pending audio before future enable; closed/unavailable state is explicit.
+
+Local verification: ABI/core/transport Rust tests pass 6/137/324 cases and the
+release library rebuilds. Invalid/unnegotiated mic calls and six producer times
+are tested. Malformed cursor bitmap notifications now preserve raw diagnostics
+without triggering native capture handoff unless a normalized cursor is valid;
+zero-count cached cursor updates remain supported. Detailed three-repo scope and
+final validation: ../protocol/docs/v2/gfn-input-five-implementation-2026-10-13.md.
+All changes remain uncommitted. No live session, deployment or CI started.

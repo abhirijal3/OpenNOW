@@ -1183,6 +1183,7 @@ fn prepare_on_endpoint(
         "startupTimeoutMs":VIDEO_STARTUP_TIMEOUT_MS
     });
     video_qos_offers.add_to_handoff(&mut handoff);
+    player_profile_overrides(&describe.body, &mut handoff)?;
     handoff["framePacingFeedbackMode"] = json!(pacing_feedback_mode);
     if let Some(max_control_report_bytes) = max_control_report_bytes {
         handoff["maxQosMessagesSize"] = json!(max_control_report_bytes);
@@ -2005,6 +2006,33 @@ fn parse_hid_device_mask(value: &str) -> u32 {
     u32::from_str_radix(digits, radix).unwrap_or(0)
 }
 
+fn player_profile_overrides(sdp: &str, handoff: &mut Value) -> Result<(), NvstRtspError> {
+    let mut values=serde_json::Map::new();
+    for (attribute,field,multiplier) in [
+        ("vqos[0].bw.statsTime","videoMs",1),
+        ("aqos[0].audioStatsUpdateIntervalMs","audioMs",1),
+        ("vqos[0].fec.enable","fec",1),("vqos[0].bllFec.enable","bll",1),
+        ("vqos[0].bllFec.adaptiveActivation","adaptiveBll",1),
+        ("vqos[0].bllFec.adaptiveActivationThresholdX100","bllThreshold",1),
+        ("video[0].enableRtpNack","nack",1),("video[0].rtdHistoryLength","rtdHistory",1),
+        ("video[0].dejitterBufferLengthMs","waitMs",1),
+        ("general.rtpQueueMaxDurationMs","offWaitMs",1),
+        ("video[0].rtpNackBackoffTimeMs","pollMs",1),
+        ("video[0].rtpNackInitialWaitTimeMs","graceMs",1),
+        ("vqos[0].cpm.iirFilterFactor","cpmMilli",1000),
+        ("vqos[0].cpm.maxFrameDecodeTimeFactor","decodeFactorMilli",1000),
+        ("vqos[0].bwe.iirFilterFactor","bweMilli",1000),
+    ] {
+        if let Some(value)=sdp_attribute(sdp,attribute) {
+            let number=value.parse::<u32>().ok().and_then(|v|v.checked_mul(multiplier))
+                .ok_or_else(||NvstRtspError::new("invalid-player-profile",format!("invalid player setting {attribute}")))?;
+            values.insert(field.to_owned(),json!(number));
+        }
+    }
+    if !values.is_empty(){handoff["nativePlayerProfile"]=Value::Object(values);}
+    Ok(())
+}
+
 fn qos_messages_size(sdp: &str) -> Result<Option<usize>, NvstRtspError> {
     let mut selected = None;
     for line in sdp
@@ -2264,6 +2292,17 @@ mod setup_tests;
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn player_profile_sdp_overrides_preserve_defaults_and_reject_overflow() {
+        let mut handoff=json!({});
+        player_profile_overrides("", &mut handoff).unwrap();
+        assert!(handoff.get("nativePlayerProfile").is_none());
+        player_profile_overrides("a=x-nv-vqos[0].bw.statsTime:50\r\na=x-nv-vqos[0].cpm.iirFilterFactor:4\r\n", &mut handoff).unwrap();
+        assert_eq!(handoff["nativePlayerProfile"]["videoMs"],50);
+        assert_eq!(handoff["nativePlayerProfile"]["cpmMilli"],4000);
+        assert!(player_profile_overrides("a=x-nv-vqos[0].cpm.iirFilterFactor:4294967295", &mut handoff).is_err());
+    }
 
     fn stream_config(context: &SessionContext) -> MediaStreamConfig {
         super::super::media_stream_config(context)

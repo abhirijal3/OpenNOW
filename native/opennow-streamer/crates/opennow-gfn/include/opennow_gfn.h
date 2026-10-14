@@ -80,10 +80,42 @@ OpennowGfn *opennow_gfn_create(const OpennowGfnCallbacks *callbacks);
  */
 int32_t opennow_gfn_command(OpennowGfn *gfn, const uint8_t *json, size_t len);
 
+/* Install before start. Receives bounded complete native control commands,
+ * including headers and versioned tails, on the bundle receive thread. */
+/* Raw original audio RTP plus derived receive keys: profile 0=AES256-GCM16,
+ * 1=AES128-GCM16 (upper key bytes zero). Callback pointers last only for the call. */
+typedef void (*OpennowGfnAudioFn)(void *user, const uint8_t *bytes, size_t len, const uint8_t *key, const uint8_t *salt, uint8_t profile);
+int32_t opennow_gfn_set_audio_callback(OpennowGfn *gfn, OpennowGfnAudioFn callback, void *user);
+int32_t opennow_gfn_set_control_callback(OpennowGfn *gfn, OpennowGfnBytesFn callback, void *user);
+/* Active-session ownership transition. Discards feedback from the previous owner. */
+int32_t opennow_gfn_set_player_feedback(OpennowGfn *gfn, uint8_t enabled);
+/* Non-blocking enqueue onto active negotiated control channels; -1 on unavailable,
+ * malformed, unsupported, or full. Does not use the private custom channels. */
+int32_t opennow_gfn_send_control(OpennowGfn *gfn, const uint8_t *bytes, size_t len);
+/* Zero means no fresh RTT measurement. Queue lifetime is 1..84000 us; the negotiated SCTP role retains its own reliability policy. */
+/* Non-secret 40-byte v2 player-profile wire image; -1 if no active profile. */
+int32_t opennow_gfn_player_timing(OpennowGfn *gfn, uint8_t *out, size_t cap);
+int32_t opennow_gfn_player_profile(OpennowGfn *gfn, uint8_t *out, size_t cap);
+uint32_t opennow_gfn_upstream_rtt_us(OpennowGfn *gfn);
+int32_t opennow_gfn_send_control_deadline(OpennowGfn *gfn, const uint8_t *bytes, size_t len, uint32_t lifetime_us);
+
 /**
  * Queues input for the active session. Safe from any thread. Returns 0, or -1
  * for a NULL handle or pad.
  */
+/* Availability: 1 available, 0 unavailable, -1 invalid/busy. Enable/Opus: 0 accepted, -1 rejected. */
+int32_t opennow_gfn_microphone_available(OpennowGfn *);
+int32_t opennow_gfn_microphone_enable(OpennowGfn *, uint8_t);
+int32_t opennow_gfn_microphone_opus(OpennowGfn *, const uint8_t *, size_t, uint32_t);
+
+/* Timed variants preserve the player's original monotonic microsecond clock. */
+int32_t opennow_gfn_key_at(OpennowGfn *, uint16_t, uint16_t, uint8_t, uint64_t);
+int32_t opennow_gfn_mouse_move_at(OpennowGfn *, int16_t, int16_t, uint64_t);
+int32_t opennow_gfn_mouse_abs_at(OpennowGfn *, uint16_t, uint16_t, uint16_t, uint16_t, uint64_t);
+int32_t opennow_gfn_mouse_button_at(OpennowGfn *, uint8_t, uint8_t, uint64_t);
+int32_t opennow_gfn_mouse_wheel_at(OpennowGfn *, int16_t, int16_t, uint64_t);
+int32_t opennow_gfn_gamepad_at(OpennowGfn *, const OpennowGfnGamepad *, uint64_t);
+
 int32_t opennow_gfn_key(OpennowGfn *gfn, uint16_t virtual_key, uint16_t modifiers, uint8_t pressed);
 int32_t opennow_gfn_mouse_move(OpennowGfn *gfn, int16_t delta_x, int16_t delta_y);
 int32_t opennow_gfn_mouse_abs(OpennowGfn *gfn, uint16_t x, uint16_t y, uint16_t width, uint16_t height);

@@ -15,6 +15,7 @@ mod nvst_haptics;
 mod nvst_input;
 mod nvst_microphone;
 mod nvst_network;
+pub mod nvst_player;
 
 pub use frame_stage_timing::{FrameStageTimings, StageSummary};
 pub use nvst_haptics::{NvstControllerRumble, NvstHaptics};
@@ -130,3 +131,9 @@ mod tests {
         ));
     }
 }
+
+pub mod nvst_keyexport;
+
+mod nvst_audio_raw;
+
+mod nvst_profile;
