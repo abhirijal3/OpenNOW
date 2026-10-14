@@ -68,6 +68,11 @@ typedef struct {
  * Returns NULL when callbacks is NULL.
  */
 OpennowGfn *opennow_gfn_create(const OpennowGfnCallbacks *callbacks);
+/* Session zero clears the player loss override. Retry a failed update with
+ * the latest cumulative first-send counts; no native bitrate is pinned. */
+int32_t opennow_gfn_invalidate_references(OpennowGfn *gfn, uint32_t first, uint32_t last);
+int32_t opennow_gfn_set_downstream_qos(OpennowGfn *gfn, uint32_t session,
+                                    uint32_t expected, uint32_t received);
 
 /**
  * Runs one engine command, given as JSON: {"id","type",...}. Types are hello

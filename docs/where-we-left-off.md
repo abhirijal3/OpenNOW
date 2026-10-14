@@ -1,6 +1,17 @@
 # Where we left off
 
-## Current checkpoint — 2026-10-12 (Codex, exact-seat resume tested live; custom Dota active)
+## Current checkpoint — 2026-10-14 (Codex, v2.0 repair WIP paused)
+
+Abhi requested Markdown handoff because usage is nearly exhausted. Work paused.
+Authoritative shared state: /Users/abhirijal/Documents/GitHub/protocol/docs/v2/results/gfn-v20-recovery-handoff-2026-10-14.md.
+Current branch codex/v2.0-recovery-fix remains dirty/uncommitted; original baseline
+and v2.1 preserved. Native reference invalidation hook implemented/tests pass,
+but live still times out. Loss-only QoS prototype is diagnostic/default-disabled.
+Latest tests/results/running cleanup and ordered next steps are in shared handoff.
+All live seats/protocol processes stopped, last seat released15:41:07EDT.
+No push/default promotion; do not restart work/live sessions until Abhi resumes.
+
+## Previous checkpoint — 2026-10-12 (Codex, exact-seat resume tested live; custom Dota active)
 
 Abhi authorized custom client takeover after protocol validation. Added/tested
 --resume-session-id in tools/run_live_session.py: authenticated discovery must find exact

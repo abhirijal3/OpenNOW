@@ -409,6 +409,18 @@ impl Engine {
         })])
     }
 
+    pub fn invalidate_references(&self, first: u32, last: u32) -> Result<(), String> {
+        let feedback = self.nvst_feedback.as_ref().ok_or("no active NVST session")?;
+        feedback.request_reference_invalidation(first, last);
+        Ok(())
+    }
+
+    pub fn set_downstream_qos(&self, session: u32, expected: u32, received: u32) -> Result<(), String> {
+        let feedback = self.nvst_feedback.as_ref().ok_or("no active NVST session")?;
+        feedback.set_downstream_qos(session, expected, received);
+        Ok(())
+    }
+
     fn request_idr(&self, command: &Command) -> Result<Vec<Value>, Value> {
         let feedback = self.nvst_feedback.as_ref().ok_or_else(|| {
             error(Some(&command.id), "no-active-session", "IDR request requires an active NVST session")

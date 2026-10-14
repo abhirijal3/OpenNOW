@@ -447,3 +447,70 @@ fn qos_warmup_and_new_sessions_keep_independent_baselines() {
     assert_eq!(word(&report, 44), 0);
     assert_eq!(word(&report, 36), 0);
 }
+
+#[test]
+fn relay_qos_reports_player_loss_instead_of_clean_pop_receipt() {
+    let feedback = NvstFeedbackState::default();
+    feedback.set_downstream_qos(9, 116, 8);
+    let first = feedback.qos_report(&QosReport::default(), Duration::from_millis(50));
+    feedback.set_downstream_qos(9, 232, 16);
+    let second = feedback.qos_report(&first, Duration::from_millis(100));
+    assert_eq!(second.loss_per_ten_thousand, 9310);
+    assert_eq!(second.packet_snapshot.unwrap().base, 9);
+    assert_eq!(second.bytes_received, first.bytes_received);
+    feedback.set_downstream_qos(10, 4, 4);
+    let next_session = feedback.qos_report(&second, Duration::from_millis(150));
+    assert_eq!(next_session.loss_per_ten_thousand, 0);
+    feedback.set_downstream_qos(10, 8, 8);
+    let clean = feedback.qos_report(&next_session, Duration::from_millis(200));
+    assert_eq!(clean.loss_per_ten_thousand, 0);
+    feedback.set_downstream_qos(0, 0, 0);
+    let cleared = feedback.qos_report(&clean, Duration::from_millis(250));
+    assert!(cleared.packet_snapshot.is_none());
+}
+
+#[test]
+fn relay_qos_old_report_and_counter_wrap_do_not_invent_loss() {
+    let feedback = NvstFeedbackState::default();
+    feedback.set_downstream_qos(5, u32::MAX - 2, u32::MAX - 4);
+    let before = feedback.qos_report(&QosReport::default(), Duration::from_millis(50));
+    feedback.set_downstream_qos(5, 2, 0);
+    let wrapped = feedback.qos_report(&before, Duration::from_millis(100));
+    assert_eq!(wrapped.loss_per_ten_thousand, 0);
+    feedback.set_downstream_qos(5, 12, 9);
+    let after = feedback.qos_report(&wrapped, Duration::from_millis(150));
+    assert_eq!(after.loss_per_ten_thousand, 1000);
+    assert_eq!(halfword(&after, 26), 1000);
+}
+
+#[test]
+fn relay_qos_per_frame_update_stays_within_cpu_budget() {
+    let feedback = NvstFeedbackState::default();
+    let start = Instant::now();
+    for i in 1..=100_000u32 {
+        feedback.set_downstream_qos(9, i * 116, i * 8);
+        std::hint::black_box(&feedback);
+    }
+    let per_report_us = start.elapsed().as_secs_f64() * 1_000_000.0 / 100_000.0;
+    println!("downstream native QoS update: {per_report_us:.3} us, budget 10 us");
+    // Ten microseconds is under 0.06% of a 60 FPS frame, including the mutex.
+    assert!(per_report_us < 10.0);
+}
+
+#[test]
+fn relay_reference_invalidation_retries_and_preserves_newer_loss() {
+    let feedback = NvstFeedbackState::default();
+    assert!(feedback.reference_pending().is_none());
+    feedback.request_reference_invalidation(60, 60);
+    let first = feedback.reference_pending().unwrap();
+    assert_eq!(first, (60, 60));
+    assert_eq!(feedback.reference_pending(), Some(first));
+    feedback.request_reference_invalidation(59, 62);
+    feedback.reference_sent(first);
+    assert_eq!(feedback.reference_pending(), Some((59, 62)));
+    feedback.reference_sent((59, 62));
+    assert!(feedback.reference_pending().is_none());
+    feedback.request_reference_invalidation(u32::MAX, 0);
+    assert!(feedback.keyframe_request_pending());
+    assert!(feedback.reference_pending().is_none());
+}

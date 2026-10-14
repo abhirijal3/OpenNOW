@@ -42,7 +42,7 @@ use super::frame_stage_timing::FrameStageTimingsAccumulator;
 use super::nvst_bandwidth::{BandwidthEstimator, PacketBandwidthSample};
 use super::nvst_control::{
     DEFAULT_FRAME_TIME_US, FRAME_ACK_PAYLOAD_LEN, FRAME_PACING_INTERVAL, MAX_NACK_PACKET_COUNT,
-    QOS_REPORT_INTERVAL, QosPacketSnapshot, QosReport, frame_ack, frame_pacing_report, idr_request,
+    QOS_REPORT_INTERVAL, QosPacketSnapshot, QosReport, frame_ack, frame_pacing_report, idr_request, reference_invalidation, merge_reference_range,
     nack_v2,
 };
 use super::nvst_cursor::{CursorCommand, NvstCursorCapture, valid_cursor_channel_message};
@@ -614,6 +614,8 @@ pub struct NvstFeedbackState {
     received_packets: AtomicU32,
     report_prior: Mutex<(u32, u32)>,
     recent_network_metrics: Mutex<RecentNetworkMetrics>,
+    downstream_qos: Mutex<Option<QosPacketSnapshot>>,
+    pending_reference: Mutex<Option<(u32, u32)>>,
     bundle_receive_bytes: AtomicU64,
     video_receive_bytes: AtomicU64,
     reception_timing: Mutex<ReceptionTiming>,
@@ -643,6 +645,8 @@ impl Default for NvstFeedbackState {
             received_packets: AtomicU32::new(0),
             report_prior: Mutex::new((0, 0)),
             recent_network_metrics: Mutex::new(RecentNetworkMetrics::default()),
+            downstream_qos: Mutex::new(None),
+            pending_reference: Mutex::new(None),
             bundle_receive_bytes: AtomicU64::new(0),
             video_receive_bytes: AtomicU64::new(0),
             reception_timing: Mutex::new(ReceptionTiming::default()),
@@ -664,6 +668,19 @@ impl Default for NvstFeedbackState {
 }
 
 impl NvstFeedbackState {
+    /// Counts first-send packets in completed/given-up player frame reports.
+    /// Other feedback and timing retain their original NVST ownership.
+    pub fn set_downstream_qos(&self, session: u32, expected: u32, received: u32) {
+        let mut downstream = self.downstream_qos.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *downstream = (session != 0).then(|| QosPacketSnapshot {
+            ssrc: self.video_ssrc.load(Ordering::Acquire),
+            base: session,
+            highest: expected,
+            received,
+        });
+    }
+
     fn record_socket_receive(
         &self,
         socket: StreamSocket,
@@ -837,6 +854,24 @@ impl NvstFeedbackState {
         timing.last_rtp_timestamp = rtp_timestamp;
         timing.last_transit = transit;
         timing.jitter += (delta - timing.jitter) / 16.0;
+    }
+
+    pub fn request_reference_invalidation(&self, first: u32, last: u32) {
+        let mut pending = self.pending_reference.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let merged = merge_reference_range(*pending, first, last);
+        if merged.is_some() { *pending = merged; }
+        else { drop(pending); self.request_keyframe(); }
+    }
+
+    fn reference_pending(&self) -> Option<(u32, u32)> {
+        *self.pending_reference.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn reference_sent(&self, range: (u32, u32)) {
+        let mut pending = self.pending_reference.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *pending == Some(range) { *pending = None; }
     }
 
     pub fn request_keyframe(&self) {
@@ -1116,7 +1151,9 @@ impl NvstFeedbackState {
             .reception_timing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let packet_snapshot = timing.qos_packet_snapshot;
+        let packet_snapshot = self.downstream_qos.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .or(timing.qos_packet_snapshot);
         let bandwidth = timing.bandwidth.report(now);
         drop(timing);
         let loss_per_ten_thousand = previous
@@ -7280,6 +7317,14 @@ fn run_nvst_webrtc_bundle(
                 );
             }
             last_recovery_send = now;
+        }
+
+        if upstream_allowed && input_state.control_is_open()
+            && let Some(range) = feedback.reference_pending()
+            && let Some(command) = reference_invalidation(range.0, range.1)
+            && input_channels.is_some_and(|channels| channels.send_control(&mut rtc, &command))
+        {
+            feedback.reference_sent(range);
         }
 
         // Do not gate control IDR on stream_snapshot(): it is needed most when
