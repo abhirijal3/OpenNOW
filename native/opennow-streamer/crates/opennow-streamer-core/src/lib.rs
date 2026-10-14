@@ -29,6 +29,7 @@ use stream_config::{MediaColorQuality, MediaStreamConfig, MediaVideoCodec};
 
 pub use input::{CapturedInput, CapturedInputQueue, CapturedInputSample};
 pub use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer, RawPacketTap};
+pub use opennow_streamer_transport::nvst::RawAudioTap;
 
 #[derive(Clone)]
 pub struct EventSender {
@@ -197,6 +198,10 @@ pub struct Engine {
     captured_input: Arc<CapturedInputQueue>,
     hid_runtime: Arc<HidRuntime>,
     raw_video_tap: Option<RawPacketTap>,
+    raw_control_tap: Option<RawPacketTap>,
+    native_player_profile: Option<[u8;40]>,
+    native_player_timing: Option<[u8;12]>,
+    raw_audio_tap: Option<opennow_streamer_transport::nvst::RawAudioTap>,
     nvst_feedback: Option<SharedNvstFeedback>,
 }
 
@@ -233,6 +238,10 @@ impl Engine {
             captured_input: Arc::new(CapturedInputQueue::default()),
             hid_runtime: Arc::new(HidRuntime::new()),
             raw_video_tap: None,
+            raw_control_tap: None,
+            native_player_profile: None,
+            native_player_timing: None,
+            raw_audio_tap: None,
             nvst_feedback: None,
         }
     }
@@ -249,6 +258,44 @@ impl Engine {
 
     pub fn captured_input(&self) -> Arc<CapturedInputQueue> {
         Arc::clone(&self.captured_input)
+    }
+
+    pub fn set_raw_audio_tap(&mut self, tap: Option<opennow_streamer_transport::nvst::RawAudioTap>) {
+        self.raw_audio_tap = tap;
+    }
+
+    pub fn set_raw_control_tap(&mut self, tap: Option<RawPacketTap>) {
+        self.raw_control_tap = tap;
+    }
+
+    pub fn set_player_feedback(&self, enabled: bool) -> Result<(), String> {
+        let feedback = self.nvst_feedback.as_ref().ok_or("no active NVST session")?;
+        feedback.player.set_active(enabled);
+        Ok(())
+    }
+
+    pub fn send_native_control(&self, bytes: &[u8]) -> Result<(), String> {
+        let feedback = self.nvst_feedback.as_ref().ok_or("no active NVST session")?;
+        feedback.player.enqueue(bytes, Instant::now()).map_err(str::to_owned)
+    }
+
+    pub fn native_player_profile(&self) -> Option<[u8;40]> {self.native_player_profile}
+    pub fn native_player_timing(&self) -> Option<[u8;12]> {
+        self.nvst_feedback.as_ref().and_then(|f| f.player.server_timing()).or(self.native_player_timing)
+    }
+
+    pub fn upstream_rtt_us(&self) -> Option<u32> {
+        self.nvst_feedback.as_ref()?.video_rtt_us(Instant::now())
+    }
+
+    pub fn send_native_control_deadline(&self, bytes: &[u8], lifetime_us: u32) -> Result<(), String> {
+        let feedback = self.nvst_feedback.as_ref().ok_or("no active NVST session")?;
+        feedback.player.enqueue_deadline(bytes, Instant::now(),
+            std::time::Duration::from_micros(u64::from(lifetime_us))).map_err(str::to_owned)
+    }
+
+    pub fn microphone_available(&self) -> bool {
+        self.nvst_transport.as_ref().is_some_and(|session| session.control().microphone_available())
     }
 
     pub fn set_microphone_enabled(&self, enabled: bool) -> Result<(), String> {
@@ -545,12 +592,20 @@ impl Engine {
             )
         })?;
         let nvst_config = match parse_nvst_video_handoff(&transport_context) {
-            Ok(Some(config)) => Some(match &self.raw_video_tap {
-                Some(tap) => config
-                    .with_raw_video_tap(Arc::clone(tap))
-                    .with_header_only(true),
-                None => config,
-            }),
+            Ok(Some(mut config)) => {
+                self.native_player_profile = Some(config.player_profile());
+                self.native_player_timing = Some(config.player_timing_event());
+                if let Some(tap) = &self.raw_video_tap {
+                    config = config.with_raw_video_tap(Arc::clone(tap)).with_header_only(true);
+                }
+                if let Some(tap) = &self.raw_audio_tap {
+                    config = config.with_raw_audio_tap(Arc::clone(tap));
+                }
+                if let Some(tap) = &self.raw_control_tap {
+                    config = config.with_raw_control_tap(Arc::clone(tap));
+                }
+                Some(config)
+            },
             Ok(None) => {
                 return Err(error(
                     Some(&command.id),
@@ -875,6 +930,8 @@ impl Engine {
 
     fn stop_media_resources(&mut self) {
         self.nvst_feedback = None;
+        self.native_player_profile = None;
+        self.native_player_timing = None;
         self.captured_input.clear();
         if let Some(worker) = self.event_worker.take()
             && let Ok(mut reports) = worker.join()
@@ -1664,11 +1721,10 @@ fn forward_nvst_captured_sample<R: NvstSessionResources>(
     // Bifrost timestamps native input at OS capture, before aggregation and
     // SCTP sending. Keeping that time prevents a delayed queue drain from
     // making a group of older reports look newly generated.
-    let captured = sample
-        .captured_at
-        .checked_duration_since(state.input_origin)
-        .unwrap_or_default();
-    let timestamp_us = u64::try_from(captured.as_micros()).unwrap_or(u64::MAX);
+    let timestamp_us = sample.source_timestamp_us.unwrap_or_else(|| {
+        let captured = sample.captured_at.checked_duration_since(state.input_origin).unwrap_or_default();
+        u64::try_from(captured.as_micros()).unwrap_or(u64::MAX)
+    });
     if let CapturedInput::Text(text) = sample.input {
         return resources.send_captured_text(text, timestamp_us);
     }
@@ -2444,6 +2500,7 @@ mod tests {
                     delta_y: -1,
                 },
                 captured_at: input_origin + Duration::from_micros(4_242),
+                source_timestamp_us: None,
             },
             &state,
         )
@@ -2460,6 +2517,18 @@ mod tests {
     }
 
     #[test]
+    fn relayed_capture_time_is_not_replaced_by_pop_queue_time() {
+        let resources = TestNvstResources::default();
+        let state = NvstMediaFeedbackState::new(true);
+        forward_nvst_captured_sample(&resources, CapturedInputSample {
+            input: CapturedInput::MouseMove { delta_x: 1, delta_y: -1 },
+            captured_at: Instant::now(), source_timestamp_us: Some(1234567890123),
+        }, &state).unwrap();
+        let inputs = resources.captured_inputs.lock().unwrap();
+        assert_eq!(u64::from_be_bytes(inputs[0][14..22].try_into().unwrap()), 1234567890123);
+    }
+
+    #[test]
     fn captured_unicode_text_uses_typed_transport_without_key_expansion() {
         use opennow_streamer_protocol::text_input::TextInputSlot;
         let resources = TestNvstResources::default();
@@ -2472,6 +2541,7 @@ mod tests {
             CapturedInputSample {
                 input: CapturedInput::Text(text),
                 captured_at: state.input_origin,
+                source_timestamp_us: None,
             },
             &state,
         )

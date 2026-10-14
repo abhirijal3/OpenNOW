@@ -1,35 +1,63 @@
 # Where we left off
 
-## Current checkpoint — 2026-10-12 (Codex, exact-seat resume tested live; custom Dota active)
+## Current checkpoint — 2026-10-13 (Codex, player timing bridge locally validated)
 
-Abhi authorized custom client takeover after protocol validation. Added/tested
---resume-session-id in tools/run_live_session.py: authenticated discovery must find exact
-seat, session.claim, fresh polling until resumePending clears; no allocation fallback.
-Eight Python tests and py_compile passed (tools/test_run_live_session.py). No Rust/ABI
-change/cargo rerun. Launcher deployed to existing OVH checkout and tested live.
+Abhi authorized protocol section-7 implementation with tests/benchmarks and a
+Windows static audit. This repo adds cached server-authoritative 0x0112 config,
+`opennow_gfn_player_timing` C ABI/startup seed, reliable/partial control forwarding,
+and checked player-owned 0x0203-v3 partial-channel routing. No invented DJB
+command/version-5 payload or synthetic GPU/display report. Latest server enable/
+disable overrides startup seeds and persists across player takeover; new session
+feedback clears old config. Header/source/paced metadata stays inside video bytes.
+Contracts updated in `docs/protocol-integration.md` and protocol's
+`docs/v2/opennow-library.md` / `packet-map.md`; complete report/index in protocol.
 
-Old stale driver/core/POP 308811/308812/308834 killed without session.stop, preserving
-Dota seat fbbb5a16-91fe-41cf-84cf-b1a4208b5e79 from the official client. RESUME 12:25:57
-UTC, ready 12:26:03, new driver/core/POP 328087/328088/328113. Rebuilt custom laptop
-client 86017 shows Dota at 1920x1200 HEVC/60 fps. Source/client stay active and log.
-Stop current driver via SIGTERM 328087 when ending custom seat; no stale driver remains.
+Branch v2.1, HEAD 2f0dcda15248c0a7c7ca7c25160440607fe88efc; all edits uncommitted.
+Preserve concurrent timed-input/microphone/cursor/media/key-export work. Cursor
+truncation fixture now permits the already-supported six-byte cached reference.
+`cargo test --manifest-path native/opennow-streamer/Cargo.toml --workspace` passes
+541 tests; `cargo build --manifest-path native/opennow-streamer/Cargo.toml -p
+opennow-gfn --release` passes. Logs in protocol's
+`v2/out/gfn-frametiming-20261013/{test-opennow-final,build-opennow-final}.log`.
+Protocol C unit/socket tests and OVH ASan/UBSan/leak tests cover bridge routing;
+local synthetic/decoded benchmarks are not live negotiation or official parity.
+Final player focused tests 2278 / 58, CTest 498/498, and Linux FFmpeg-owner/trace
+sanitizer checks 374 / 39 pass; raw logs/report remain in protocol.
 
-Official current logs show 4150-byte bitmap cursor/Local cursor:1 at 60 fps. Native
-COMMAND_BITMAP_CURSOR currently has normalized=None and POP forwards small system
-updates only. Bitmap bridge remains unfinished; initial mimicRemoteCursor:0 shared
-by both clients is not a verified explanation. Protocol fixed stale short-tail FEC
-padding with failing-before/passing-after regression and ASan/perf. Full OVH suite
-passed, client 403/403; local smoke timing/count failures also occur without the fix.
-Limited new live sample: 6365 complete frames, 86 rebuilt shards, no missing or reset
-over ~106 s. Exact attribution and complete official-client smoothing remain open.
+No task-owned process/agent/watch/automation remains; no new live GFN session,
+service restart, deployment/push/CI, billed resource or access change. Concurrent input completion is recorded below. Abhi chose to run the prepared
+Windows runner. Next: physical results, separately live-authorized official A/B,
+then decide supported timing-version/backend/default gates from evidence. Native
+processing/GFN negotiation and timing still require a real session to validate.
 
-opennow-library HEAD 2bcab378947d7fa7fd38a38bc13031e1e2c62b73 still dirty/uncommitted;
-prior work preserved. No new allocation, purchase, access change, agent/watch/push.
-Remote current logs: /home/ubuntu/protocol-live-20261011/logs/virginia-takeover-20261012-122555/;
-local protocol/v2/out/takeover-ovh-2026-10-12-082455/. Detailed evidence, validation,
-limitations and next steps: protocol/docs/v2/results/gfn-cursor-recovery-2026-10-12.md
-and current protocol checkpoint. Next: native bitmap forwarding/ownership and precise
-recovery comparison; leave intentional custom stream running until Abhi stops it.
+### Concurrent input/microphone bridge — 2026-10-13 (Codex, locally complete)
+
+Six timed input ABI calls retain producer microseconds through Rust/NVST;
+negotiated mic availability, enable and opaque Opus ABI use the existing bounded
+RTP/SRTP source queue. New player generations re-arm/clear the queue before the
+POP acknowledges them. Malformed bitmap notifications require a normalized
+cursor before capture handoff. Contracts: docs/protocol-integration.md and
+protocol/docs/v2/opennow-library.md. All edits uncommitted at the same v2.1 HEAD.
+`cargo test --manifest-path native/opennow-streamer/Cargo.toml --workspace`
+passes 6 ABI + 137 core + 325 transport; release opennow-gfn build passes. Canonical
+shared checkpoint and full tests/limits are protocol/docs/where-we-left-off.md
+and protocol/docs/v2/gfn-input-five-implementation-2026-10-13.md; logs in
+protocol/v2/out/gfn-input-five-20261013/. No input-owned processes remain; no
+new live session, service/access change, deployment/push/CI. Physical/live parity
+is unmeasured. Preserve the separate playback checkpoint above.
+
+## Previous checkpoint — 2026-10-12 (Antigravity, Client-Side Cursor Confine Level & End-to-End Cursor Pipeline)
+
+1. OpenNOW (`nvst_input.rs`): Updated `remote_cursor_tracking(true)` (`0x030d`, `COMMAND_TRACK_REMOTE_CURSOR_IMAGE`) to send level `2` (`REMOTE_CURSOR_TRACKING_CONFINE`, `0d03010002`) instead of `1`, matching `libGeronimo` (`2 - (useLocalCursorWithConfine == 0)`). Also lowered `COMMAND_BITMAP_CURSOR` (`0x0110`) minimum payload length in `server_cursor_messages` from 8 bytes to 6 bytes so 6-byte `count = 0` cached bitmap cursor switches without a position tail are forwarded instead of dropped. All 34 `nvst_input` tests pass.
+2. protocol (`v2/src/popcursor.{h,c}`, `v2/src/v2features.c`, `v2/tools/v2pop.c`, `v2/tests/test_popcursor.c`, `v2/tests/test_features.c`): Added `pop_cursor_queue_t` so bitmap cursor definitions (`count > 0`) arriving before `on_feature_poll` runs are never overwritten by intermediate system/cached-reference cursor events; modified `v2_pop_cursor_bitmap` to immediately queue `CUR_KIND_SHAPE` blobs into `p->msg` when new bitmap shapes are bound; and updated `pop_cursor_queue_push` coalescing to preserve `has_pos`/`x`/`y` (when neither update is hidden) and `has_confine`/`confine` across consecutive cursor updates in the same poll batch. `test_popcursor` passes all 162 checks; `test_features` passes all 3579 checks.
+3. moonlight-qt (`streamtypes.h`, `v2transport.{h,cpp}`, `clientcursor.{h,cpp}`, `cursormanager.{h,cpp}`, `sdlinputhandler.h`, `input.cpp`, `session.cpp`, `tests/test_v2transport.cpp`, `tests/test_cursormanager.cpp`): Forwarded GFN system cursor IDs (`v->sys_id` 1..16) and host pointer `scale_pct` (`v->scale_pct`) from `V2Transport::onCursorThunk` into `CursorManager`, mapped system cursors 1..12 to `SDL_CreateSystemCursor` and 13..16 to `SDL_GetDefaultCursor()` (matching `SDLMouseCursorDecoder`), passed `currentScalePct()` into `CursorManager::applyShape`, replaced single-shape `m_LastCursorShape` reset-on-switch with a 32-entry `m_SentCursorShapes` ring so rapid bitmap/system/hidden cursor switches reuse cached shapes without round-trip re-requests, and moved `SDL_WarpMouseInWindow` onto the SDL main thread right after exiting relative mouse mode. `streamclient_tests "[cursormanager],[v2transport],[clientcursor]"` passes 53 cases (2,686 assertions), and both `build-dev` and `build-noproto` compile cleanly.
+
+opennow-library HEAD 2f0dcda still dirty/uncommitted; prior work preserved. No new
+allocation, purchase, access change, agent/watch/push. Rebuilt `libopennow_gfn.a` on OVH
+(`/home/ubuntu/OpenNOW-live-20261012-latest`) and `v2pop` (`/home/ubuntu/protocol-live-20261012-latest/v2/bin/v2pop`),
+then resumed the same Illinois GFN seat `8ace22c3-3bf7-459e-aa9b-89156a14fd02` (`66.22.135.140`, L40-12).
+Intentionally running: OVH driver `350266`, `opennow-core` `350267`, `v2pop` `350347`; laptop `streamclient` `59088`, `caffeinate` `59089`.
+Live `v2pop.log` verified `id=1000 count=4150` and client connection; laptop `client.log` verified `pointer: drawn by this client` and `pointer: the host shows it, absolute mouse` at 60 fps.
 
 ## Historical checkpoint — 2026-10-12 (Antigravity, non-blocking Metal render, SRTP ROC sync, decoder watchdog diagnosis)
 

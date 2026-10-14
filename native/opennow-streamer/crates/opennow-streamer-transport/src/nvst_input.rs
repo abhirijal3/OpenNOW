@@ -500,19 +500,46 @@ pub(crate) fn server_cursor_messages(bytes: &[u8]) -> Vec<NvstServerCursorMessag
                     normalized,
                 });
             }
-            COMMAND_BITMAP_CURSOR if payload.len() >= 8 => {
-                // Bitmap cursor payloads have a distinct native pixel layout.
-                // Keep detecting them explicitly so they cannot be mistaken for
-                // input/control commands while raw bitmap support is added.
-                updates.push(NvstServerCursorMessage {
-                    command: code,
-                    offset,
-                    raw: bytes[offset..payload_end].to_vec(),
-                    cursor_id: None,
-                    position: None,
-                    visible: None,
-                    normalized: None,
-                });
+            COMMAND_BITMAP_CURSOR if payload.len() >= 6 => {
+                let cursor_id =
+                    u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                let count = usize::from(u16::from_le_bytes([payload[4], payload[5]]));
+                let valid = if count > 0 {
+                    payload.len() >= 12 + count
+                } else {
+                    true
+                };
+                if valid {
+                    let tail_start = if count > 0 { 12 + count } else { 6 };
+                    let position = (payload.len() >= tail_start + 4).then(|| {
+                        (
+                            u16::from_le_bytes([payload[tail_start], payload[tail_start + 1]]),
+                            u16::from_le_bytes([payload[tail_start + 2], payload[tail_start + 3]]),
+                        )
+                    });
+                    let mut normalized = Vec::with_capacity(1 + payload.len());
+                    normalized.push(1); // 1 = bitmap cursor indicator
+                    normalized.extend_from_slice(payload);
+                    updates.push(NvstServerCursorMessage {
+                        command: code,
+                        offset,
+                        raw: bytes[offset..payload_end].to_vec(),
+                        cursor_id: Some(cursor_id),
+                        position,
+                        visible: Some(true),
+                        normalized: Some(normalized),
+                    });
+                } else {
+                    updates.push(NvstServerCursorMessage {
+                        command: code,
+                        offset,
+                        raw: bytes[offset..payload_end].to_vec(),
+                        cursor_id: None,
+                        position: None,
+                        visible: None,
+                        normalized: None,
+                    });
+                }
             }
             _ => {}
         }
@@ -1163,8 +1190,15 @@ fn mouse_cursor_capture(enabled: bool) -> Vec<u8> {
     control_command(COMMAND_MOUSE_CURSOR_CAPTURE, &[u8::from(enabled)])
 }
 
+const REMOTE_CURSOR_TRACKING_CONFINE: u8 = 2;
+
 fn remote_cursor_tracking(enabled: bool) -> Vec<u8> {
-    control_command(COMMAND_TRACK_REMOTE_CURSOR_IMAGE, &[u8::from(enabled)])
+    let level = if enabled {
+        REMOTE_CURSOR_TRACKING_CONFINE
+    } else {
+        0
+    };
+    control_command(COMMAND_TRACK_REMOTE_CURSOR_IMAGE, &[level])
 }
 
 fn haptics_state(enabled: bool, timestamp_us: u64) -> NvstEncodedInput {
@@ -1601,7 +1635,7 @@ mod tests {
         assert_eq!(mouse_cursor_capture(false), hex("0803010000"));
         assert_eq!(mouse_cursor_capture(true), hex("0803010001"));
         assert_eq!(remote_cursor_tracking(false), hex("0d03010000"));
-        assert_eq!(remote_cursor_tracking(true), hex("0d03010001"));
+        assert_eq!(remote_cursor_tracking(true), hex("0d03010002"));
         let now = Instant::now();
         assert_eq!(
             next_control_keepalive(now).duration_since(now),
@@ -1617,7 +1651,7 @@ mod tests {
             )
         );
         assert_eq!(chain[2], hex("0803010001"));
-        assert_eq!(chain[3], hex("0d03010001"));
+        assert_eq!(chain[3], hex("0d03010002"));
         assert_eq!(chain[4], hex("20030c00000000001300000000000000"));
         assert_eq!(chain[5], hex("21030c00000000000000000000000000"));
         assert_eq!(chain[6], hex("0b020c00000000000100000001000000"));
@@ -1679,7 +1713,7 @@ mod tests {
 
     #[test]
     fn short_cursor_payloads_do_not_consume_following_commands() {
-        for (code, minimum_length) in [(COMMAND_SYSTEM_CURSOR, 4), (COMMAND_BITMAP_CURSOR, 8)] {
+        for (code, minimum_length) in [(COMMAND_SYSTEM_CURSOR, 4), (COMMAND_BITMAP_CURSOR, 6)] {
             for length in 0..minimum_length {
                 let mut bytes = control_command(code, &vec![0x0f; length]);
                 let visible_offset = bytes.len();
@@ -2126,5 +2160,71 @@ mod tests {
         };
         assert_eq!(encoded.route, NvstInputRoute::ControlReliable);
         assert_ne!(encoded.route, NvstInputRoute::InputPartial);
+    }
+
+    #[test]
+    fn extracts_bitmap_cursor_notifications_with_normalization() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1000_u32.to_le_bytes());
+        payload.extend_from_slice(&54_u16.to_le_bytes());
+        payload.extend_from_slice(&1_u16.to_le_bytes());
+        payload.extend_from_slice(&4_u16.to_le_bytes());
+        payload.extend_from_slice(&5_u16.to_le_bytes());
+        let mut image = vec![0x42, 0x4d];
+        image.resize(54, 0);
+        payload.extend_from_slice(&image);
+        payload.extend_from_slice(&10_u16.to_le_bytes());
+        payload.extend_from_slice(&20_u16.to_le_bytes());
+
+        let cmd = control_command(COMMAND_BITMAP_CURSOR, &payload);
+        let cursors = server_cursor_messages(&cmd);
+        assert_eq!(cursors.len(), 1);
+        assert_eq!(cursors[0].cursor_id, Some(1000));
+        assert_eq!(cursors[0].position, Some((10, 20)));
+        assert_eq!(cursors[0].visible, Some(true));
+        assert!(cursors[0].normalized.is_some());
+        let norm = cursors[0].normalized.as_ref().unwrap();
+        assert_eq!(norm[0], 1);
+        assert_eq!(&norm[1..], &payload);
+
+        let mut cached_payload = Vec::new();
+        cached_payload.extend_from_slice(&1000_u32.to_le_bytes());
+        cached_payload.extend_from_slice(&0_u16.to_le_bytes());
+        cached_payload.extend_from_slice(&30_u16.to_le_bytes());
+        cached_payload.extend_from_slice(&40_u16.to_le_bytes());
+
+        let cached_cmd = control_command(COMMAND_BITMAP_CURSOR, &cached_payload);
+        let cached_cursors = server_cursor_messages(&cached_cmd);
+        assert_eq!(cached_cursors.len(), 1);
+        assert_eq!(cached_cursors[0].cursor_id, Some(1000));
+        assert_eq!(cached_cursors[0].position, Some((30, 40)));
+        assert_eq!(cached_cursors[0].visible, Some(true));
+        assert!(cached_cursors[0].normalized.is_some());
+        let cached_norm = cached_cursors[0].normalized.as_ref().unwrap();
+        assert_eq!(cached_norm[0], 1);
+        assert_eq!(&cached_norm[1..], &cached_payload);
+
+        let mut cached_no_pos = Vec::new();
+        cached_no_pos.extend_from_slice(&1001_u32.to_le_bytes());
+        cached_no_pos.extend_from_slice(&0_u16.to_le_bytes());
+        let cached_no_pos_cmd = control_command(COMMAND_BITMAP_CURSOR, &cached_no_pos);
+        let cached_no_pos_cursors = server_cursor_messages(&cached_no_pos_cmd);
+        assert_eq!(cached_no_pos_cursors.len(), 1);
+        assert_eq!(cached_no_pos_cursors[0].cursor_id, Some(1001));
+        assert_eq!(cached_no_pos_cursors[0].position, None);
+        assert_eq!(cached_no_pos_cursors[0].visible, Some(true));
+        let cached_no_pos_norm = cached_no_pos_cursors[0].normalized.as_ref().unwrap();
+        assert_eq!(cached_no_pos_norm[0], 1);
+        assert_eq!(&cached_no_pos_norm[1..], &cached_no_pos);
+
+        let mut truncated_payload = Vec::new();
+        truncated_payload.extend_from_slice(&1000_u32.to_le_bytes());
+        truncated_payload.extend_from_slice(&54_u16.to_le_bytes());
+        truncated_payload.extend_from_slice(&[0; 10]);
+
+        let trunc_cmd = control_command(COMMAND_BITMAP_CURSOR, &truncated_payload);
+        let trunc_cursors = server_cursor_messages(&trunc_cmd);
+        assert_eq!(trunc_cursors.len(), 1);
+        assert_eq!(trunc_cursors[0].normalized, None);
     }
 }

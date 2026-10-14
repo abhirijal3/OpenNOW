@@ -48,6 +48,7 @@ const CAPTURED_INPUT_CAPACITY: usize = 256;
 pub struct CapturedInputSample {
     pub input: CapturedInput,
     pub captured_at: Instant,
+    pub source_timestamp_us: Option<u64>,
 }
 
 type InputWaker = Box<dyn Fn() + Send + Sync>;
@@ -142,6 +143,7 @@ impl CapturedInputQueue {
         pending.push_back(CapturedInputSample {
             input: CapturedInput::Text(text),
             captured_at: Instant::now(),
+            source_timestamp_us: None,
         });
         drop(pending);
         self.ring();
@@ -160,6 +162,7 @@ impl CapturedInputQueue {
         self.push_sample(CapturedInputSample {
             input,
             captured_at: Instant::now(),
+            source_timestamp_us: None,
         });
     }
 
@@ -222,6 +225,7 @@ impl CapturedInputQueue {
                 right_stick_y: 0,
             },
             captured_at: Instant::now(),
+            source_timestamp_us: None,
         });
         debug_assert!(pending.len() <= CAPTURED_INPUT_CAPACITY + 4);
         drop(pending);
