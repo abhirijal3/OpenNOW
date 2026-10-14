@@ -200,6 +200,28 @@ pub unsafe extern "C" fn opennow_gfn_command(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_invalidate_references(
+    gfn: *mut OpennowGfn, first: u32, last: u32,
+) -> i32 {
+    let Some(gfn) = (unsafe { gfn.as_ref() }) else { return -1; };
+    let Ok(guard) = gfn.engine.try_lock() else { return -1; };
+    match guard.as_ref().and_then(|e| e.invalidate_references(first, last).ok()) {
+        Some(()) => 0, None => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_set_downstream_qos(
+    gfn: *mut OpennowGfn, session: u32, expected: u32, received: u32,
+) -> i32 {
+    let Some(gfn) = (unsafe { gfn.as_ref() }) else { return -1; };
+    let Ok(guard) = gfn.engine.try_lock() else { return -1; };
+    match guard.as_ref().and_then(|e| e.set_downstream_qos(session, expected, received).ok()) {
+        Some(()) => 0, None => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn opennow_gfn_key(
     gfn: *mut OpennowGfn,
     virtual_key: u16,
@@ -375,6 +397,10 @@ mod tests {
         assert_eq!(unsafe { opennow_gfn_command(gfn, ptr::null(), 0) }, -1);
         assert_eq!(unsafe { opennow_gfn_key(ptr::null_mut(), 0x41, 0, 1) }, -1);
         assert_eq!(unsafe { opennow_gfn_gamepad(gfn, ptr::null()) }, -1);
+        assert_eq!(unsafe { opennow_gfn_set_downstream_qos(ptr::null_mut(), 9, 116, 8) }, -1);
+        assert_eq!(unsafe { opennow_gfn_set_downstream_qos(gfn, 9, 116, 8) }, -1);
+        assert_eq!(unsafe { opennow_gfn_invalidate_references(ptr::null_mut(), 60, 61) }, -1);
+        assert_eq!(unsafe { opennow_gfn_invalidate_references(gfn, 60, 61) }, -1);
         assert!(unsafe { opennow_gfn_create(ptr::null()) }.is_null());
         unsafe { opennow_gfn_destroy(gfn) };
         unsafe { opennow_gfn_destroy(ptr::null_mut()) };

@@ -152,6 +152,25 @@ impl QosReport {
     }
 }
 
+pub(crate) fn merge_reference_range(current: Option<(u32, u32)>, first: u32, last: u32)
+    -> Option<(u32, u32)>
+{
+    if first > last { return None; }
+    Some(match current {
+        Some((a, b)) => (a.min(first), b.max(last)),
+        None => (first, last),
+    })
+}
+
+pub(crate) fn reference_invalidation(first: u32, last: u32) -> Option<[u8; 28]> {
+    if first > last { return None; }
+    let mut command = [0u8; 28];
+    command[..4].copy_from_slice(&[1, 3, 24, 0]);
+    command[4..12].copy_from_slice(&u64::from(first).to_le_bytes());
+    command[12..20].copy_from_slice(&u64::from(last).to_le_bytes());
+    Some(command)
+}
+
 pub(crate) fn idr_request() -> NvstControlCommand {
     NvstControlCommand {
         code: IDR_REQUEST_CODE,
@@ -367,5 +386,24 @@ mod tests {
     #[test]
     fn idr_request_matches_the_source_layout() {
         assert_eq!(idr_request().encoded(), [0x02, 0x03, 0x02, 0x00, 0, 0]);
+    }
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+    #[test]
+    fn live_reference_range_uses_native_0301_layout() {
+        let command = reference_invalidation(60, 61).unwrap();
+        assert_eq!(&command[..4], &[1, 3, 24, 0]);
+        assert_eq!(u64::from_le_bytes(command[4..12].try_into().unwrap()), 60);
+        assert_eq!(u64::from_le_bytes(command[12..20].try_into().unwrap()), 61);
+        assert_eq!(&command[20..], &[0; 8]);
+        assert!(reference_invalidation(u32::MAX, 0).is_none());
+        assert_eq!(merge_reference_range(None, 60, 60), Some((60, 60)));
+        assert_eq!(merge_reference_range(Some((60, 61)), 59, 62), Some((59, 62)));
+        assert_eq!(merge_reference_range(Some((60, 61)), 60, 60), Some((60, 61)));
+        assert!(merge_reference_range(None, u32::MAX, 0).is_none());
+        assert!(reference_invalidation(0, u32::MAX).is_some());
     }
 }
