@@ -1,7 +1,8 @@
 import subprocess
 import unittest
 from unittest.mock import Mock
-from run_live_session import CoreClient, session_duration_active, session_ready, acquire_session
+from types import SimpleNamespace
+from run_live_session import CoreClient, session_duration_active, session_ready, acquire_session, v2pop_command
 
 class LiveRunnerTests(unittest.TestCase):
     def test_resume_claims_exact_seat_without_create_or_stop(self):
@@ -32,6 +33,23 @@ class LiveRunnerTests(unittest.TestCase):
         self.assertFalse(session_ready({"status": 1}))
         self.assertTrue(session_ready({"status": 2}))
         self.assertTrue(session_ready({"status": 3, "resumePending": False}))
+
+    def _pop_args(self, **extra):
+        base = dict(v2pop_bin="v2pop", relay_key="k", gfn_key="g", gfn_salt="s", port=29878, codec="av1",
+                    route=None, trunk_peer=None, port_range=None)
+        base.update(extra)
+        return SimpleNamespace(**base)
+
+    def test_v2pop_without_route_is_unchanged(self):
+        cmd = v2pop_command(self._pop_args(), "a", "ctx.json")
+        self.assertNotIn("--route", cmd)
+        self.assertEqual(cmd[-4:], ["--context", "ctx.json", "--sim", "0"])
+
+    def test_v2pop_route_passes_trunk_peer_and_port_range(self):
+        cmd = v2pop_command(self._pop_args(route="r.json", trunk_peer="45.115.216.138", port_range="29870-29899"),
+                            "a", "ctx.json")
+        self.assertEqual(cmd[-6:], ["--route", "r.json", "--trunk-peer", "45.115.216.138",
+                                    "--port-range", "29870-29899"])
 
     def test_new_allocation_is_acknowledged(self):
         core = Mock()

@@ -90,6 +90,29 @@ def acquire_session(core, resume_id, app_id, title, scope):
     core.send({"type": "ack", "id": request_id})
     return created["session"]
 
+def v2pop_command(args, audio_key, context_file):
+    cmd = [
+        args.v2pop_bin,
+        "--key", args.relay_key,
+        "--gfn-key", args.gfn_key,
+        "--gfn-salt", args.gfn_salt,
+        "--ssrc", "1",
+        "--gfn-audio-key", audio_key,
+        "--gfn-audio-salt", args.gfn_salt,
+        "--audio-ssrc", "2",
+        "--port", str(args.port),
+        "--codec", args.codec,
+        "--context", context_file,
+        "--sim", "0"
+    ]
+    if getattr(args, "route", None):
+        cmd += ["--route", args.route]
+        if args.trunk_peer:
+            cmd += ["--trunk-peer", args.trunk_peer]
+        if args.port_range:
+            cmd += ["--port-range", args.port_range]
+    return cmd
+
 def main():
     parser = argparse.ArgumentParser(description="Live GFN Session + v2pop Relay Orchestrator")
     parser.add_argument("--app-id", default="9029111", help="Default: 9029111 (Dota 2)")
@@ -110,7 +133,12 @@ def main():
     parser.add_argument("--width", type=int, default=1920, help="Stream width")
     parser.add_argument("--height", type=int, default=1080, help="Stream height")
     parser.add_argument("--bitrate-mbps", type=int, default=75, help="Max bitrate in Mbps")
+    parser.add_argument("--route", help="v2.2 route instruction file passed to v2pop (ingress role; claim_seat must match --resume-session-id)")
+    parser.add_argument("--trunk-peer", help="IPv4 of the next POP, passed to v2pop with --route")
+    parser.add_argument("--port-range", help="LO-HI UDP range opened on this POP, passed to v2pop with --route")
     args = parser.parse_args()
+    if (args.trunk_peer or args.port_range) and not args.route:
+        parser.error("--trunk-peer and --port-range only apply with --route")
     if args.relay_key_file:
         with open(args.relay_key_file) as f:
             args.relay_key = f.read().strip()
@@ -221,20 +249,7 @@ def main():
         log(f"wrote streamer context to {context_file}")
 
         # Launch v2pop relay server
-        v2pop_cmd = [
-            args.v2pop_bin,
-            "--key", args.relay_key,
-            "--gfn-key", args.gfn_key,
-            "--gfn-salt", args.gfn_salt,
-            "--ssrc", "1",
-            "--gfn-audio-key", audio_key,
-            "--gfn-audio-salt", args.gfn_salt,
-            "--audio-ssrc", "2",
-            "--port", str(args.port),
-            "--codec", args.codec,
-            "--context", context_file,
-            "--sim", "0"
-        ]
+        v2pop_cmd = v2pop_command(args, audio_key, context_file)
         log(f"launching v2pop: {args.v2pop_bin} (media/control keys redacted)")
         log_file = open(os.path.join(args.log_dir, "v2pop.log"), "w")
         pop_proc = subprocess.Popen(v2pop_cmd, stdout=log_file, stderr=subprocess.STDOUT)
