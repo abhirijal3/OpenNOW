@@ -47,13 +47,6 @@ success response to the ICE library only once. Delayed duplicate replies must no
 the original completion time and turn the age of an old probe into the displayed network RTT.
 This does not cap genuine network latency or filter first replies based on their timing.
 
-Session liveness follows [OpenNOW-Mac's live-tested keepalive method](https://github.com/OpenCloudGaming/OpenNOW-Mac/blob/90627114383501dd18ef165baa005d9ea603fdf3/GFN/NVST/Rtsp/NvstRtspConnection.swift#L161-L234):
-send `GET_PARAMETER` with the RTSP Session header every two seconds over the existing
-RTSPS WebSocket, and match the response. A `551 Option Not Supported` response
-still completes the keepalive. Some seats do not answer STUN/ICE probes and close the
-connection on client WebSocket pings, so those pings are replaced by session-scoped
-RTSP keepalives. Server-initiated WebSocket pings are still answered with pongs.
-
 ## Checks
 
 ```sh

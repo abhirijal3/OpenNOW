@@ -28,6 +28,8 @@ pub fn native_route(bytes: &[u8]) -> Result<NativeRoute, &'static str> {
             len == 16 + 32 * u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize => Ok(NativeRoute::Partial),
         (0x0204, 102) if bytes[4..8] == [1,0,9,0] => Ok(NativeRoute::Partial),
         (0x020c, 16) => Ok(NativeRoute::Partial),
+        (0x020b, 12) if bytes[4..6] == [0,0] && bytes[12] <= 1 && bytes[13..16] == [0,0,0] => Ok(NativeRoute::Reliable),
+        (0x030f, 8) if bytes[4..8] == [1,0,0,0] => Ok(NativeRoute::Reliable),
         (0x0317, 13..=643) if bytes[4] == 2 && bytes[6] != 0 &&
             usize::from(bytes[6]) <= 64 && len == 3 + 10 * usize::from(bytes[6]) => Ok(NativeRoute::Partial),
         (0x0301, 24) | (0x0302, 2) | (0x0312, 16) => Ok(NativeRoute::Reliable),
@@ -126,7 +128,20 @@ mod tests {
         if code == 0x202 { b[4] = 4; }
         if code == 0x207 { b[4] = 7; }
         if code == 0x204 { b[4] = 1; b[6] = 9; }
+        if code == 0x30f { b[4] = 1; }
         b
+    }
+    #[test]
+    fn nack_state_and_slow_decoder_request_go_reliable() {
+        assert_eq!(native_route(&command(0x20b, 12)), Ok(NativeRoute::Reliable));
+        let mut on = command(0x20b, 12); on[12] = 1;
+        assert_eq!(native_route(&on), Ok(NativeRoute::Reliable));
+        on[12] = 2; assert!(native_route(&on).is_err());
+        on[12] = 1; on[4] = 1; assert!(native_route(&on).is_err());
+        assert!(native_route(&command(0x20b, 11)).is_err());
+        assert_eq!(native_route(&command(0x30f, 8)), Ok(NativeRoute::Reliable));
+        let mut other = command(0x30f, 8); other[4] = 2;
+        assert!(native_route(&other).is_err());
     }
     #[test]
     fn routes_are_roles_not_numeric_sctp_streams() {

@@ -1,43 +1,9 @@
 # Integrating OpenNOW with our protocol
 
-Written 2026-10-08 on branch `opennow-library` (abhirijal3/OpenNOW). This is the OpenNOW side of the v2
-"GFN client" role: what the library does today, how the POP program wires it in, and what is left. The
-protocol side's view of the same thing is `~/Documents/GitHub/protocol/docs/v2/opennow-library.md`, and the
-design it serves is `~/Documents/GitHub/protocol/docs/v2/DESIGN.md` (index: `docs/v2/README.md` there).
-
-## Live relay status (2026-10-11, Codex)
-
-2026-10-13 timing bridge addition (local tests, no new live run): the C ABI now
-exports `opennow_gfn_player_timing(gfn,out,cap)`, returning the complete 12-byte
-0x0112 config or -1 without modifying output on failure. Server-validated
-stream-zero enable/disable overrides the startup seed and persists across player
-takeover; a new session uses a new feedback instance. POP sends config after
-the profile, then forwards subsequent server control events. Player-owned
-0x0203 version 3 is checked for exact count/length (1..16 records) and sent
-on the partial channel. Real decode/render/display measurements belong to
-the player; unknown stages are not filled by OpenNOW. See protocol's
-`docs/v2/opennow-library.md`, `packet-map.md` and Windows seven-mode audit.
-
-Abhi authorized resuming the OVH POP and GFN run with the laptop client, then changed
-the source from queued Virginia to India. The first India stream delivered roughly
-60 fps receive/decode with clean authentication, then lost the source after AFK.
-The client window retained the last picture after its network worker exited. Three
-India restarts currently fail upstream HTTP 500; see the current report/checkpoint. The
-engine now accepts `request-idr` through the existing C command API and sets the active
-NVST feedback flag; without an active session it emits `no-active-session`. Feedback is
-cleared on stop. This does not add the other control levers to the ABI.
-
-The current C header still lacks direct key export. The driver provides video master
-material in the RTSPS context, and protocol `v2pop` derives packet keys/salt before sending
-them to the client. `on_media` audio is decrypted primary Opus; the POP seals it with a
-separate downstream audio key and uses PT 111. This fallback is not upstream audio RTP
-pass-through. See the protocol's `docs/v2/DESIGN.md` live integration section and
-`docs/v2/results/gfn-ovh-2026-10-11.md` for measured scope and validation.
-
-`tools/run_live_session.py` is the live orchestration driver. It defaults to no duration
-limit, accepts a private `--relay-key-file`, writes private context and POP logs under
-`--log-dir`, and on SIGTERM stops/reaps the POP, releases the GFN seat, and reaps the core.
-`tools/test_run_live_session.py` covers duration and core cleanup.
+This is the OpenNOW side of the v2 "GFN client" role: what the library does, how the POP program wires it in,
+and where to read more. The protocol side's view is `~/Documents/Rasbari/protocol/docs/v2/opennow-library.md`,
+and the design it serves is `~/Documents/Rasbari/protocol/docs/v2/DESIGN.md` (index: `docs/v2/README.md` there).
+Library API, threading or behavior changes get written here and in that protocol file.
 
 ## The shape
 
@@ -110,11 +76,12 @@ keyframe request if no frame completes for too long. It sends no NACKs on GFN's 
 
 ## What goes in
 
-- Input: `opennow_gfn_key`, `_mouse_move`, `_mouse_button`, `_mouse_wheel`, `_gamepad`, from any thread.
-  The library builds GFN's 0x0206/0x020d packets and puts them on the right SCTP channel. Input wakes the
-  library at once; nothing waits on a timer.
+- Input: `opennow_gfn_key`, `_mouse_move`, `_mouse_button`, `_mouse_wheel`, `_gamepad`, from any thread, and the
+  matching `_at` calls that carry the producer's own microsecond clock. The library builds GFN's 0x0206/0x020d
+  packets and puts them on the right SCTP channel. Input wakes the library at once; nothing waits on a timer.
 - Engine commands as JSON through `opennow_gfn_command`: `hello`, `start`, `stop`, `shutdown`,
-  `anti-afk-pulse`.
+  `anti-afk-pulse`, `request-idr` (acts on the active session, otherwise answers `no-active-session`).
+- Player-owned control, microphone and profile calls: see `integration-input-timing-mic.md`.
 
 Keep input flowing or GFN treats the seat as idle. The collector nudges the mouse one pixel a second and
 sends `anti-afk-pulse` every minute.
@@ -125,81 +92,11 @@ The library runs its own threads per session: the bundle (control, audio, QoS), 
 keepalive, event forwarding, plus the wrapper's media and event threads. Callbacks run on those threads,
 so what they touch on the POP side must be safe there. Sending on a UDP socket from the video thread is.
 
-## Measured (2026-10-08, GFN India, L40S in Mumbai, from an M1 Mac)
 
-| | Library CPU (one core) | Notes |
-|---|---|---|
-| Start of the day | about 8% | 1 ms bundle polling, 250 us event polling, 40 NAT pings/s |
-| Wakeup fixes | 6.4% | |
-| Header-only mode | 1.5% | bundle 0.93%, video 0.43%, events 0.03% |
+## More
 
-Most of the remaining 1.5% is macOS's unconnected `sendto` (about 95 us a call); the same call on Linux
-measured 1.4 to 3.9 us, so Linux should land well under 1% per session. Live heap is about 1.3 MB per
-session. GFN accepted it: every frame acked (4,106 in 70 s at 60 fps), QoS reports at about 19 a second.
-The stream itself on a menu screen: 180 to 400 video packets a second, 1.3 to 3.8 Mbps, 40% of video
-packets GFN parity, 200 Opus packets a second.
-
-## What is left
-
-In the order that gets a real GFN frame to a player soonest:
-
-1. Export the video SRTP key, salt, SSRC and profile to C. `v2`'s accept needs them so the player can
-   restore GFN's header and decrypt. The library already has them (it puts the key in the ANNOUNCE).
-   Without this, everything forwarded is unreadable.
-2. Wire the library into `protocol/v2/src/server.c` in place of `gfnsim` (protocol side).
-3. The levers as C calls: the rate into 0x0207's bandwidth field with utilisation kept low, 0x0318 max
-   bitrate, 0x0301 invalidate a frame range, 0x0302 keyframe.
-4. Audio: find out whether str0m will hand over its DTLS-SRTP keys so audio passes through encrypted like
-   video (`wrapping-gfn.md`); otherwise keep handing the POP decrypted Opus.
-5. Pass GFN's input bytes through raw if the player builds them (`wrapping-gfn.md` proposes it), and
-   GFN's other player-facing commands (bitmap cursor 0x0110, haptics, HDR, terminate 0x0109) as raw bytes
-   instead of JSON events.
-6. A Linux capacity test: several sessions on one Ubuntu box, CPU and RAM per session. One NVIDIA account
-   gets one seat, so it needs several accounts.
-7. Many accounts in `opennow-core`: today it holds one active account per process.
-8. Later, if measurement asks for it: one event loop for every session instead of threads per session.
-
-To revisit: the library asks GFN for `x-nv-vqos[0].drc.enable:0`, so GFN never changes resolution, only
-bitrate. Whether the middleman should allow it is open (Abhi, 2026-10-08).
-
-Open questions on the protocol side that touch this: DESIGN.md's "Four pieces" text still says whole
-access units while the code is pass-through; whether the parity line in `wrapping-gfn.md` means forward or
-drop; one loop for many sessions against v1's one process per session; and the terms-of-use question about
-relaying a GFN session.
-
-## Same-seat handover launcher (2026-10-12)
-
-Use tools/run_live_session.py --resume-session-id ID with the existing region/codec/
-resolution/key-file options to reclaim a running official-client game. The launcher
-first uses session.remote.list, requires the exact ID, then calls session.claim and
-polls until ready with resumePending cleared before streamer.prepare. Discovery or
-claim failures never allocate a substitute seat. Normal launcher termination still
-releases its seat, so stale source launchers must not use their cleanup RPC while an
-official client owns that same game. Eight Python regressions cover acquisition and
-cleanup behavior. See protocol's current checkpoint for the live handover state.
-
-
-## Relayed input timestamps and microphone (2026-10-13, Codex)
-
-The protocol/Moonlight input implementation adds six typed `_at` C ABI calls with
-u64 producer microseconds. `CapturedInputSample.source_timestamp_us` carries
-that source clock through the engine queue into NVST serialization; normal Rust
-input still uses its local captured_at/session-origin mapping. Untimed C APIs
-remain available. POP receipt/liveness uses a separate clock. This is source-time
-preservation, not a live NVIDIA timing interpretation claim.
-
-Three typed microphone calls expose negotiated availability (0/1, or -1 for
-invalid/busy), enable/mute (0 accepted/-1 rejected) and opaque Opus submission
-(1..1275 bytes plus 48 kHz RTP timestamp, 0 accepted/-1 rejected). They use the
-existing bounded 5-frame/100 ms microphone queue and negotiated RTP/SRTP sender;
-no new codec on the POP. The negotiated microphone mode and remote SDP still
-must support it. Admission does not prove delivery to a seat. Source disable
-clears pending audio before future enable; closed/unavailable state is explicit.
-
-Local verification: ABI/core/transport Rust tests pass 6/137/324 cases and the
-release library rebuilds. Invalid/unnegotiated mic calls and six producer times
-are tested. Malformed cursor bitmap notifications now preserve raw diagnostics
-without triggering native capture handoff unless a normalized cursor is valid;
-zero-count cached cursor updates remain supported. Detailed three-repo scope and
-final validation: ../protocol/docs/v2/gfn-input-five-implementation-2026-10-13.md.
-All changes remain uncommitted. No live session, deployment or CI started.
+- `integration-input-timing-mic.md`: timed input, microphone, player feedback, timing and profile calls, raw audio and control taps, key export.
+- `integration-measured.md`: measured CPU, memory and stream rates from the first live run (2026-10-08).
+- `integration-open-work.md`: what is still open on the library and POP side.
+- `same-seat-handover.md`: the live driver and reclaiming a running official-client seat.
+- `core-protocol.md`: the seat-booking program the POP starts first.

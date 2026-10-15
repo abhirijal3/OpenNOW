@@ -1510,7 +1510,7 @@ fn create_posts_the_cloudmatch_body_built_from_the_caller_launch_params() {
     let cases = [
         (
             json!({"title":"Launch fixture","accountLinked":true,"supportsInGameSettingsPersistence":true}),
-            json!({"internalTitle":"Launch fixture","accountLinked":true,"enablePersistingInGameSettings":true}),
+            json!({"internalTitle":"Launch fixture","accountLinked":true,"enablePersistingInGameSettings":false}),
         ),
         (
             json!({}),

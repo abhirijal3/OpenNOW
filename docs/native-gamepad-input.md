@@ -1,9 +1,8 @@
 # Native gamepad input
 
-Qt's `ControllerInput` discovers SDL3 gamepads and sends typed snapshots through
-`NativeStreamRuntime` and the streamer FFI. The native core already serializes the
-complete 38-byte gamepad event. The NVST transport must preserve that event rather
-than reconstructing it from a captured idle packet.
+Controller snapshots from the embedder become GFN input packets in `opennow-streamer-transport`
+(`nvst_input.rs`, controller encoding in `opennow-streamer-hid`). The whole 38-byte gamepad event must be
+preserved rather than rebuilt from a captured idle packet.
 
 ## Wire contract
 

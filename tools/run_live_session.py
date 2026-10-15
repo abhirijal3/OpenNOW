@@ -106,7 +106,7 @@ def main():
     parser.add_argument("--relay-key-file", help="Read the control key from a private file")
     parser.add_argument("--gfn-key", default=secrets.token_hex(32))
     parser.add_argument("--gfn-salt", default="000000000000000000000001")
-    parser.add_argument("--codec", default="h264", help="Video codec (h264 or h265)")
+    parser.add_argument("--codec", default="h264", help="Video codec (h264, h265/hevc or av1; the client's --decode-caps picks it)")
     parser.add_argument("--width", type=int, default=1920, help="Stream width")
     parser.add_argument("--height", type=int, default=1080, help="Stream height")
     parser.add_argument("--bitrate-mbps", type=int, default=75, help="Max bitrate in Mbps")
@@ -172,7 +172,7 @@ def main():
         core.call("settings.set", {"key": "region", "value": target_reg["url"], "providerIdpId": provider_idp})
 
         # Configure codec, resolution, and bitrate
-        codec_val = "h265" if args.codec.lower() in ("h265", "hevc") else "h264"
+        codec_val = {"h265": "h265", "hevc": "h265", "av1": "av1"}.get(args.codec.lower(), "h264")
         core.call("settings.set", {"key": "codec", "value": codec_val, "providerIdpId": provider_idp})
         log(f"configured codec: {codec_val}")
         if args.width and args.height:

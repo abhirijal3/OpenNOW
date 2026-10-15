@@ -35,6 +35,11 @@ struct ActiveSession {
     client: Client,
 }
 
+struct UnknownCreate {
+    owner: (String, String),
+    app_id: i64,
+}
+
 struct SessionConflict {
     owner: (String, String),
     received: Instant,
@@ -64,6 +69,7 @@ pub struct CloudMatchService {
     fresh: Mutex<Option<FreshAllocation>>,
     cleanup_path: Option<PathBuf>,
     retained_cleanup: Mutex<Option<Value>>,
+    unknown_create: Mutex<Option<UnknownCreate>>,
     #[cfg(test)]
     test_control_base: Option<Url>,
 }
@@ -125,6 +131,7 @@ impl CloudMatchService {
             fresh: Mutex::new(None),
             cleanup_path: None,
             retained_cleanup: Mutex::new(None),
+            unknown_create: Mutex::new(None),
             #[cfg(test)]
             test_control_base: None,
         }
@@ -196,6 +203,14 @@ impl CloudMatchService {
         {
             return Err(ServiceError {code:"session_cleanup_pending", message:"A cancelled allocation still needs cleanup. End that session before starting another game.".to_owned()});
         }
+        if self
+            .unknown_create
+            .try_lock()
+            .map_err(|_| allocation_in_progress())?
+            .is_some()
+        {
+            return Err(create_outcome_unknown());
+        }
         if let Some(allocation) = self
             .fresh
             .try_lock()
@@ -257,14 +272,27 @@ impl CloudMatchService {
             .join("v2/session")
             .map_err(|_| invalid("Invalid CloudMatch session URL"))?;
         crate::language::append_session_preferences(&mut url, settings);
-        let response = client
+        let response = match client
             .post(url)
             .headers(cloudmatch_headers(token, device_id)?)
             .json(&body)
             .send()
-            .map_err(|error| network("Session creation failed", error))?;
+        {
+            Ok(response) => response,
+            Err(error) if error.is_connect() => {
+                return Err(network("Session creation failed", error));
+            }
+            Err(_) => {
+                self.mark_unknown_create(auth, &app_id);
+                return Err(create_outcome_unknown());
+            }
+        };
         let status = response.status();
         let payload = response.json::<Value>();
+        if status.is_success() && payload.is_err() {
+            self.mark_unknown_create(auth, &app_id);
+            return Err(create_outcome_unknown());
+        }
         if let Ok(payload) = &payload
             && let Some(error) = self.capture_session_conflict(status, payload, &base, auth)
         {
@@ -278,7 +306,13 @@ impl CloudMatchService {
             .map(ToOwned::to_owned)
             .or_else(|| base.host_str().map(ToOwned::to_owned))
             .unwrap_or_default();
-        let mut info = session_info(&payload, &base, &zone, &app_id, device_id)?;
+        let mut info = match session_info(&payload, &base, &zone, &app_id, device_id) {
+            Ok(info) => info,
+            Err(error) => {
+                self.mark_unknown_create(auth, &app_id);
+                return Err(if error.code == "upstream_error" { create_outcome_unknown() } else { error });
+            }
+        };
         info["keyboardLayout"] = json!(crate::language::session_keyboard_layout(settings));
         if let Some(session_id) = network_test["sessionId"].as_str() {
             info["networkTestSessionId"] = json!(session_id);
@@ -328,6 +362,58 @@ impl CloudMatchService {
         info["phase"] =
             Value::String(session_phase(info["status"].as_i64().unwrap_or_default()).to_owned());
         Ok(json!({"session":info}))
+    }
+
+    fn mark_unknown_create(&self, auth: &AuthSession, app_id: &str) {
+        *self
+            .unknown_create
+            .lock()
+            .expect("CloudMatch unknown-create state poisoned") = Some(UnknownCreate {
+            owner: (auth.provider.idp_id.clone(), auth.user.user_id.clone()),
+            app_id: app_id.parse().unwrap_or_default(),
+        });
+    }
+
+    fn settle_unknown_create_by_discovery(&self, auth: &AuthSession, sessions: &[Value]) {
+        let mut unknown = self
+            .unknown_create
+            .lock()
+            .expect("CloudMatch unknown-create state poisoned");
+        if unknown.as_ref().is_some_and(|marker| {
+            marker.owner == (auth.provider.idp_id.clone(), auth.user.user_id.clone())
+                && !sessions
+                    .iter()
+                    .any(|session| value_i64(&session["appId"]) == Some(marker.app_id))
+        }) {
+            *unknown = None;
+        }
+    }
+
+    fn settle_unknown_create_by_stop(&self, session_id: &str) {
+        let stopped_app_id = self
+            .discovered
+            .lock()
+            .expect("CloudMatch discovery state poisoned")
+            .get(session_id)
+            .and_then(|session| value_i64(&session["appId"]))
+            .or_else(|| {
+                self.active
+                    .lock()
+                    .expect("CloudMatch state poisoned")
+                    .as_ref()
+                    .filter(|state| state.session_id == session_id)
+                    .and_then(|state| state.app_id.parse().ok())
+            });
+        let mut unknown = self
+            .unknown_create
+            .lock()
+            .expect("CloudMatch unknown-create state poisoned");
+        if unknown
+            .as_ref()
+            .is_some_and(|marker| Some(marker.app_id) == stopped_app_id)
+        {
+            *unknown = None;
+        }
     }
 
     pub fn finish_create(
@@ -617,6 +703,7 @@ impl CloudMatchService {
             .send()
             .map_err(|error| network("Session stop failed", error))?;
         validate_delete_response("Session stop failed", response)?;
+        self.settle_unknown_create_by_stop(session_id);
         self.clear_active(session_id);
         self.clear_cleanup(session_id);
         let mut fresh = self
@@ -845,6 +932,7 @@ impl CloudMatchService {
         {
             sessions.push(pending);
         }
+        self.settle_unknown_create_by_discovery(auth, &sessions);
         self.store_discovered(&sessions);
         Ok(json!({"sessions":sessions}))
     }
@@ -1441,8 +1529,7 @@ fn build_create_body(app_id: &str, params: &Value, settings: &Value, device_id: 
     };
     let cloud_gsync = resolved_cloud_gsync(settings);
     let reflex = cloud_gsync || fps >= 120;
-    let persistence = setting_bool(settings, "enablePersistingInGameSettings", true)
-        && params["supportsInGameSettingsPersistence"].as_bool() == Some(true);
+    let persistence = false;
     let metadata = vec![
         json!({"key":"wssignaling","value":"1"}),
         json!({"key":"SubSessionId","value":random_uuid()}),
@@ -1901,7 +1988,7 @@ fn validate_cloudmatch_response(
         let code = value_i64(&payload["requestStatus"]["unifiedErrorCode"])
             .or_else(|| value_i64(&payload["session"]["errorCode"]));
         return Err(ServiceError {
-            code: "session_error",
+            code: if is_capacity_unavailable(&payload) { "session_capacity_unavailable" } else { "session_error" },
             message: code.map_or_else(
                 || description.to_owned(),
                 |code| format!("{description} ({code})"),
@@ -1946,6 +2033,8 @@ fn cloudmatch_http_error(
             "http_unauthorized"
         } else if status.as_u16() == 403 {
             "authentication_required"
+        } else if payload.is_some_and(is_capacity_unavailable) {
+            "session_capacity_unavailable"
         } else {
             "upstream_error"
         },
@@ -2632,6 +2721,31 @@ fn read_cleanup_record(reader: impl Read) -> Option<Value> {
     serde_json::from_slice(&bytes).ok()
 }
 
+fn create_outcome_unknown() -> ServiceError {
+    ServiceError {
+        code: "session_create_outcome_unknown",
+        message: "The session request may have created a seat. List active sessions and end any seat for this game before starting another.".to_owned(),
+    }
+}
+
+fn is_capacity_unavailable(payload: &Value) -> bool {
+    payload["requestStatus"]["statusDescription"]
+        .as_str()
+        .is_some_and(|description| description.to_ascii_uppercase().contains("8A960000"))
+        || [
+            &payload["requestStatus"]["unifiedErrorCode"],
+            &payload["session"]["errorCode"],
+        ]
+        .iter()
+        .any(|code| {
+            value_i64(code) == Some(0x8A960000)
+                || code.as_str().is_some_and(|code| {
+                    code.trim_start_matches("0x")
+                        .eq_ignore_ascii_case("8A960000")
+                })
+        })
+}
+
 fn allocation_in_progress() -> ServiceError {
     ServiceError {
         code: "session_update_busy",
@@ -2768,6 +2882,106 @@ mod tests {
             assert!(received[1].starts_with("DELETE /v2/session/A"));
             assert!(received[3].starts_with("PUT /v2/session/B?"));
         }
+    }
+
+    fn dropping_server(respond: Option<&'static str>) -> Url {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut reader = BufReader::new(&stream);
+                let mut line = String::new();
+                let mut length = 0;
+                while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
+                    line.clear();
+                }
+                let _ = reader.read_exact(&mut vec![0; length]);
+                if let Some(body) = respond {
+                    let _ = write!(stream, "HTTP/1.1 200 Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                }
+            }
+        });
+        base
+    }
+
+    #[test]
+    fn unreadable_create_outcome_blocks_a_second_seat_until_discovery_or_stop_settles_it() {
+        for respond in [None, Some("not json"), Some(r#"{"requestStatus":{"statusCode":1},"session":{}}"#)] {
+            let base = dropping_server(respond);
+            let client = Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
+            let service = CloudMatchService::new(client.clone());
+            let error = service
+                .create_at(&json!({"appId":"123"}), &json!({}), &conflict_auth(), "device",
+                    || Ok((client, base.clone())))
+                .unwrap_err();
+            assert_eq!(error.code, "session_create_outcome_unknown");
+            let blocked = service.admit_create().err().unwrap();
+            assert_eq!(blocked.code, "session_create_outcome_unknown");
+
+            service.settle_unknown_create_by_discovery(&conflict_auth(), &[json!({"appId":123})]);
+            assert!(service.admit_create().is_err());
+            let mut other = conflict_auth();
+            other.user.user_id = "someone-else".to_owned();
+            service.settle_unknown_create_by_discovery(&other, &[]);
+            assert!(service.admit_create().is_err());
+            service.settle_unknown_create_by_discovery(&conflict_auth(), &[json!({"appId":456})]);
+            assert!(service.admit_create().is_ok());
+        }
+    }
+
+    #[test]
+    fn stopping_the_seat_found_after_an_unknown_create_reopens_creation() {
+        let service = CloudMatchService::new(Client::new());
+        service.mark_unknown_create(&conflict_auth(), "123");
+        service.store_discovered(&[json!({"sessionId":"other","appId":456}), json!({"sessionId":"found","appId":123})]);
+        service.settle_unknown_create_by_stop("other");
+        assert!(service.admit_create().is_err());
+        service.settle_unknown_create_by_stop("found");
+        assert!(service.admit_create().is_ok());
+    }
+
+    #[test]
+    fn refused_connection_is_not_an_unknown_outcome() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        drop(listener);
+        let client = Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
+        let service = CloudMatchService::new(client.clone());
+        let error = service
+            .create_at(&json!({"appId":"123"}), &json!({}), &conflict_auth(), "device",
+                || Ok((client, base.clone())))
+            .unwrap_err();
+        assert_eq!(error.code, "network_error");
+        assert!(service.admit_create().is_ok());
+    }
+
+    #[test]
+    fn capacity_exhaustion_is_its_own_error_code() {
+        let by_description = json!({"requestStatus":{"statusCode":4,"statusDescription":"INTERNAL_ERROR_STATUS 8A960000"}});
+        let by_number = json!({"requestStatus":{"unifiedErrorCode":0x8A960000_i64}});
+        let by_hex = json!({"session":{"errorCode":"0x8a960000"}});
+        for payload in [&by_description, &by_number, &by_hex] {
+            assert!(is_capacity_unavailable(payload));
+            assert_eq!(
+                cloudmatch_http_error("Session creation failed", reqwest::StatusCode::INTERNAL_SERVER_ERROR, Some(payload)).code,
+                "session_capacity_unavailable"
+            );
+        }
+        assert!(!is_capacity_unavailable(&json!({"requestStatus":{"statusDescription":"INTERNAL_ERROR_STATUS"}})));
+        assert_eq!(
+            cloudmatch_http_error("Session creation failed", reqwest::StatusCode::INTERNAL_SERVER_ERROR, None).code,
+            "upstream_error"
+        );
+        let ok_status = validate_cloudmatch_response("Session creation failed", reqwest::StatusCode::OK, Ok(json!({"requestStatus":{"statusCode":4,"statusDescription":"x 8A960000"}})), false);
+        assert_eq!(ok_status.unwrap_err().code, "session_capacity_unavailable");
     }
 
     #[test]
@@ -2940,10 +3154,11 @@ mod tests {
                 )
                 .unwrap_err()
                 .code,
-            "network_error"
+            "session_create_outcome_unknown"
         );
         assert!(service.allocation_admission.try_lock().is_ok());
         assert!(service.fresh.lock().unwrap().is_none());
+        service.settle_unknown_create_by_discovery(&conflict_auth(), &[]);
         assert!(
             service
                 .create_at(
@@ -2962,7 +3177,7 @@ mod tests {
                 })
                 .is_err()
         );
-        for code in ["upstream_error", "session_error", "upstream_error"] {
+        for code in ["upstream_error", "session_error", "session_create_outcome_unknown"] {
             assert_eq!(
                 service
                     .create_at(
@@ -2978,6 +3193,7 @@ mod tests {
             );
             assert!(service.allocation_admission.try_lock().is_ok());
             assert!(service.fresh.lock().unwrap().is_none());
+            service.settle_unknown_create_by_discovery(&conflict_auth(), &[]);
         }
         let result = service
             .create_at(
@@ -4570,7 +4786,7 @@ mod tests {
     }
 
     #[test]
-    fn in_game_settings_persistence_defaults_on_and_requires_game_support() {
+    fn create_never_persists_in_game_settings_so_every_seat_starts_fresh() {
         for preference in [Value::Null, json!(false), json!(true)] {
             for support in [Value::Null, json!(false), json!(true)] {
                 let mut params = json!({});
@@ -4584,7 +4800,7 @@ mod tests {
                 let body = build_create_body("123", &params, &settings, "stable-device");
                 assert_eq!(
                     body["sessionRequestData"]["enablePersistingInGameSettings"],
-                    preference != false && support == true
+                    false
                 );
             }
         }
@@ -4696,7 +4912,7 @@ mod tests {
                 .is_none()
         );
         assert!(request.get("externalAppId").is_none());
-        assert_eq!(request["enablePersistingInGameSettings"], true);
+        assert_eq!(request["enablePersistingInGameSettings"], false);
         assert_eq!(request["internalTitle"], "Portal 2");
         assert_eq!(request["accountLinked"], true);
         assert_eq!(request["appLaunchMode"], 2);

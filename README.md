@@ -8,7 +8,7 @@ rate and recovery levers. It has no UI and targets Ubuntu Linux servers only. Th
 - `native/opennow-streamer/`: RTSPS setup, the NVST transport, depacketizing, input, QoS and recovery.
 
 Integration with our protocol: [docs/protocol-integration.md](docs/protocol-integration.md). The protocol
-project is `~/Documents/GitHub/protocol` (its `CLAUDE.md` and `docs/v2/README.md`).
+project is `~/Documents/Rasbari/protocol` (its `CLAUDE.md` and `docs/v2/README.md`).
 
 ```
 cargo test --manifest-path native/opennow-core/Cargo.toml

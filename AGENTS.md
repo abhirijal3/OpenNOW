@@ -52,20 +52,20 @@ How the protocol's POP uses this library, the session steps, measured cost and w
 ## Cross-repo context and reading order
 
 What the library has to do, and the rest of the GFN story, lives in the protocol repo:
-`~/Documents/GitHub/protocol`.
+`~/Documents/Rasbari/protocol`.
 
-Start by reading `~/Documents/GitHub/protocol/docs/v2/README.md`. It is the live index of the
+Start by reading `~/Documents/Rasbari/protocol/docs/v2/README.md`. It is the live index of the
 v2 design and every GFN document, and it gains a line whenever something new is written, so
 re-read it at the start of each task instead of trusting what you read earlier. Read those
 files where they are; never copy them into this repo, because they keep changing.
 
 Read first, in order:
-1. `~/Documents/GitHub/protocol/docs/v2/DESIGN.md`, the "Four pieces" section: what the GFN client role
+1. `~/Documents/Rasbari/protocol/docs/v2/design/architecture.md` (indexed by `docs/v2/DESIGN.md`), the "Four pieces" section: what the GFN client role
    does and the levers it exposes (frames out tagged with GFN's frame number, audio, cursor, input in,
    the bandwidth field of the 0x0207 report, 0x0301 invalidation, 0x0302 IDR, 0x0318 max bitrate).
-2. `~/Documents/GitHub/protocol/docs/v2/gfn-barebones.md`: GFN's send and receive path at its simplest.
-3. `~/Documents/GitHub/protocol/docs/gfn-protocol.md` when you need how a mechanism works, and the
-   line-cited files under `~/Documents/GitHub/protocol/gfn-ghidra/` (server/, client/, and the
+2. `~/Documents/Rasbari/protocol/docs/v2/gfn-barebones.md`: GFN's send and receive path at its simplest.
+3. `~/Documents/Rasbari/protocol/docs/gfn-protocol.md` when you need how a mechanism works, and the
+   line-cited files under `~/Documents/Rasbari/protocol/gfn-ghidra/` (server/, client/, and the
    dumps/*.md guides) when you need proof. Never read a dumps/*.c file top to bottom: use its .md guide
    and grep.
 4. `docs/protocol-integration.md` in this repo: keep it current whenever the library's API, behavior
@@ -73,8 +73,23 @@ Read first, in order:
 
 Don't edit anything in the protocol repo except one thing. When you settle something the protocol
 side depends on (the library's API, its threading, what it hands over and when, how each lever is
-applied), write it in `~/Documents/GitHub/protocol/docs/v2/opennow-library.md` and add a line for it to
+applied), write it in `~/Documents/Rasbari/protocol/docs/v2/opennow-library.md` and add a line for it to
 `docs/v2/README.md`. That is how this side learns what you decided.
+
+## Sibling repos (all under `~/Documents/Rasbari`)
+
+`~/Documents/Rasbari/protocol` links this library into its POP (`v2/Makefile`, `OPENNOW_DIR`, default
+`../../OpenNOW`). `~/Documents/Rasbari/moonlight-qt` is the player at the other end of the protocol and
+never touches this repo directly; it reaches GFN only through the protocol's v2 client. Chain: GFN, then
+this library inside `v2pop`, then v2 UDP, then Moonlight. Keep the three side by side.
+
+## Writing docs (HARD RULE)
+
+Every doc written or changed gets an entry in its folder's index (`docs/README.md`)
+in the same turn: the file path plus one short plain line saying what it covers and when to read it.
+Write the line so an agent can decide from the index alone whether to open the file, and so it reads the
+one doc it needs and nothing extra. A doc with no index line does not exist for the next agent. Keep docs
+narrow: one topic per file, split a file that grows to cover two.
 
 ## Standing user rules
 
