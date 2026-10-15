@@ -28,6 +28,8 @@ exhaustion (`8A960000`) is `session_capacity_unavailable`, safe to retry.
 
 ## Still to do in the POP and orchestrator
 
+The POP side of this list is the POP controller (`protocol/docs/v2/pop-controller.md`), and the orchestrator side is `rasbari-platform/docs/play-plan.md` (both decided 2026-10-15).
+
 1. Store booking id to seat id at the create ack, outside the POP. If a POP dies the seat keeps running and
    counting down, so another POP adopts it (`session.active.get` with hints, then claim) or deletes it.
 2. Library heartbeat: session id, seat status, last-frame age, so loss of a POP is visible.
