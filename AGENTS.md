@@ -83,6 +83,8 @@ applied), write it in `~/Documents/Rasbari/protocol/docs/v2/opennow-library.md` 
 never touches this repo directly; it reaches GFN only through the protocol's v2 client. Chain: GFN, then
 this library inside `v2pop`, then v2 UDP, then Moonlight. Keep the three side by side.
 
+`~/Documents/Rasbari/rasbari-platform` (github.com/abhirijal3/rasbari-platform) holds the orchestrator that leases GFN accounts and tells the POP to start a session. GFN credentials live only in that orchestrator and reach this library through the POP. Its map of all five repos is `docs/repos.md` there.
+
 ## Writing docs (HARD RULE)
 
 Every doc written or changed gets an entry in its folder's index (`docs/README.md`)
