@@ -1217,6 +1217,7 @@ fn prepare_on_endpoint(
         ),
     );
 
+    eprintln!("{}", describe_stream_control(&describe.body));
     let announce_body = omit_server_announce_attributes(
         &build_announce(
             context,
@@ -1303,6 +1304,27 @@ fn advertised_bitrate_kbps(settings: &Value) -> u64 {
     (mbps * 1000.0).round() as u64
 }
 
+/// The server's own resolution and frame-rate control values, logged once per session. Our announce pins
+/// these off (Abhi, 2026-10-15: "reso should always be fixed with the starting value"); before that, a server
+/// value made the announce drop our pin, and at 20 Mbps AV1 1920x1200 GFN streamed 30 fps for minutes.
+fn describe_stream_control(describe: &str) -> String {
+    let keys = [
+        "vqos[0].drc.enable",
+        "vqos[0].dfc.enable",
+        "vqos[0].dfc.adjustResAndFps",
+        "vqos[0].dfc.minTargetFps",
+        "vqos[0].dfc.dfcAlgoVersion",
+        "vqos[0].dynamicStreamingMode",
+        "vqos[0].adjustStreamingFpsDuringOutOfFocus",
+        "vqos[0].resControl.resControlType",
+    ];
+    let mut line = String::from("NVST describe stream-control:");
+    for key in keys {
+        line.push_str(&format!(" {key}={}", sdp_attribute(describe, key).unwrap_or_else(|| "-".to_owned())));
+    }
+    line
+}
+
 fn omit_server_announce_attributes(announce: &str, describe: &str) -> String {
     const SERVER_NEGOTIATED: &[&str] = &[
         "video[0].updateSplitEncodeStateDynamically",
@@ -1322,8 +1344,6 @@ fn omit_server_announce_attributes(announce: &str, describe: &str) -> String {
         "vqos[0].fec.repairMinPercent",
         "vqos[0].fec.repairMaxPercent",
         "vqos[0].bllFec.enable",
-        "vqos[0].drc.enable",
-        "vqos[0].dfc.adjustResAndFps",
         "vqos[0].calculateAvgVideoStreamingBitrate",
         "vqos[0].bw.minimumBitrateKbps",
         "vqos[0].drc.bitrateIirFilterFactor",
@@ -1447,6 +1467,8 @@ fn build_announce(context: &SessionContext, params: AnnounceParams<'_>) -> Strin
         "a=x-nv-vqos[0].fec.repairMaxPercent:35".to_owned(),
         "a=x-nv-vqos[0].bllFec.enable:0".to_owned(),
         "a=x-nv-vqos[0].drc.enable:0".to_owned(),
+        "a=x-nv-vqos[0].dfc.enable:0".to_owned(),
+        "a=x-nv-vqos[0].adjustStreamingFpsDuringOutOfFocus:0".to_owned(),
         format!("a=x-nv-vqos[0].dfc.adjustResAndFps:{adjust_res_and_fps}"),
         "a=x-nv-vqos[0].calculateAvgVideoStreamingBitrate:1".to_owned(),
         format!("a=x-nv-vqos[0].bw.maximumBitrateKbps:{bitrate}"),
@@ -3120,6 +3142,25 @@ mod tests {
             official_video_setup_control("streamid=video/0/0"),
             "streamid=video/0/0"
         );
+    }
+
+    #[test]
+    fn our_resolution_and_frame_rate_pins_survive_server_offers() {
+        let announce = "v=0\r\na=x-nv-vqos[0].drc.enable:0\r\na=x-nv-vqos[0].dfc.adjustResAndFps:0\r\na=x-nv-vqos[0].dfc.enable:0\r\na=x-nv-vqos[0].adjustStreamingFpsDuringOutOfFocus:0\r\n";
+        let describe = "v=0\r\na=x-nv-vqos[0].drc.enable:1\r\na=x-nv-vqos[0].dfc.adjustResAndFps:1\r\na=x-nv-vqos[0].dfc.enable:1\r\na=x-nv-vqos[0].dfc.minTargetFps:30\r\n";
+        let filtered = omit_server_announce_attributes(announce, describe);
+        for (field, value) in [
+            ("vqos[0].drc.enable", "0"),
+            ("vqos[0].dfc.adjustResAndFps", "0"),
+            ("vqos[0].dfc.enable", "0"),
+            ("vqos[0].adjustStreamingFpsDuringOutOfFocus", "0"),
+        ] {
+            assert_eq!(sdp_attribute(&filtered, field), Some(value.to_owned()), "{field}");
+        }
+        let logged = describe_stream_control(describe);
+        assert!(logged.contains("vqos[0].dfc.enable=1"));
+        assert!(logged.contains("vqos[0].dfc.minTargetFps=30"));
+        assert!(logged.contains("vqos[0].dynamicStreamingMode=-"));
     }
 
     #[test]

@@ -40,12 +40,35 @@ pub fn native_route(bytes: &[u8]) -> Result<NativeRoute, &'static str> {
 #[derive(Debug)]
 struct QueuedControl { bytes: Vec<u8>, route: NativeRoute, queued: Instant, lifetime: Duration }
 
+/// What happened to the player's native commands since the session started, so the relay's stats
+/// line can show whether the client's acks and reports actually reach GFN (2026-10-15).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PlayerFeedbackCounts {
+    pub accepted: u64,
+    pub rejected: u64,
+    pub sent_reliable: u64,
+    pub sent_partial: u64,
+    pub expired: u64,
+    pub send_failed: u64,
+}
+
+#[derive(Debug, Default)]
+struct Counters {
+    accepted: AtomicU64,
+    rejected: AtomicU64,
+    sent_reliable: AtomicU64,
+    sent_partial: AtomicU64,
+    expired: AtomicU64,
+    send_failed: AtomicU64,
+}
+
 #[derive(Debug, Default)]
 pub struct PlayerFeedback {
     active: AtomicBool,
     generation: AtomicU64,
     queue: Mutex<VecDeque<QueuedControl>>,
     server_timing: Mutex<Option<[u8;12]>>,
+    counters: Counters,
 }
 
 impl PlayerFeedback {
@@ -73,6 +96,12 @@ impl PlayerFeedback {
         self.enqueue_deadline(bytes, now, PARTIAL_LIFETIME)
     }
     pub fn enqueue_deadline(&self, bytes: &[u8], now: Instant, lifetime: Duration) -> Result<(), &'static str> {
+        let result = self.enqueue_checked(bytes, now, lifetime);
+        let counter = if result.is_ok() { &self.counters.accepted } else { &self.counters.rejected };
+        counter.fetch_add(1, Ordering::Relaxed);
+        result
+    }
+    fn enqueue_checked(&self, bytes: &[u8], now: Instant, lifetime: Duration) -> Result<(), &'static str> {
         if lifetime.is_zero() || lifetime > Duration::from_millis(84) { return Err("invalid feedback lifetime"); }
         let route = native_route(bytes)?;
         let mut queue = self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -85,6 +114,17 @@ impl PlayerFeedback {
         queue.push_back(QueuedControl {bytes: bytes.to_vec(), route, queued: now, lifetime});
         Ok(())
     }
+    pub fn counts(&self) -> PlayerFeedbackCounts {
+        let c = &self.counters;
+        PlayerFeedbackCounts {
+            accepted: c.accepted.load(Ordering::Relaxed),
+            rejected: c.rejected.load(Ordering::Relaxed),
+            sent_reliable: c.sent_reliable.load(Ordering::Relaxed),
+            sent_partial: c.sent_partial.load(Ordering::Relaxed),
+            expired: c.expired.load(Ordering::Relaxed),
+            send_failed: c.send_failed.load(Ordering::Relaxed),
+        }
+    }
     pub fn flush(&self, now: Instant, mut send: impl FnMut(NativeRoute, &[u8]) -> bool) -> usize {
         let mut queue = self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut sent = 0;
@@ -93,11 +133,21 @@ impl PlayerFeedback {
         while self.active() && i < queue.len() && tried < 8 {
             let item = &queue[i];
             if item.route == NativeRoute::Partial && now.saturating_duration_since(item.queued) >= item.lifetime {
-                queue.remove(i); continue;
+                queue.remove(i);
+                self.counters.expired.fetch_add(1, Ordering::Relaxed);
+                continue;
             }
             tried += 1;
-            if send(item.route, &item.bytes) { queue.remove(i); sent += 1; }
-            else { i += 1; }
+            let route = item.route;
+            if send(route, &item.bytes) {
+                queue.remove(i);
+                sent += 1;
+                let counter = if route == NativeRoute::Reliable { &self.counters.sent_reliable } else { &self.counters.sent_partial };
+                counter.fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.counters.send_failed.fetch_add(1, Ordering::Relaxed);
+                i += 1;
+            }
         }
         sent
     }
@@ -130,6 +180,21 @@ mod tests {
         if code == 0x204 { b[4] = 1; b[6] = 9; }
         if code == 0x30f { b[4] = 1; }
         b
+    }
+    #[test]
+    fn counts_show_what_reached_gfn_and_what_did_not() {
+        let f = PlayerFeedback::default();
+        let now = Instant::now();
+        assert!(f.enqueue(&command(0x204, 102), now).is_err());
+        f.set_active(true);
+        f.enqueue(&command(0x204, 102), now).unwrap();
+        f.enqueue(&command(0x202, 124), now).unwrap();
+        assert!(f.enqueue(&command(0xffff, 8), now).is_err());
+        assert_eq!(f.flush(now, |route, _| route == NativeRoute::Reliable), 1);
+        f.flush(now + PARTIAL_LIFETIME, |_, _| true);
+        let c = f.counts();
+        assert_eq!((c.accepted, c.rejected), (2, 2));
+        assert_eq!((c.sent_reliable, c.sent_partial, c.send_failed, c.expired), (1, 0, 1, 1));
     }
     #[test]
     fn nack_state_and_slow_decoder_request_go_reliable() {

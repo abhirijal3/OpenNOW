@@ -7290,6 +7290,18 @@ fn run_nvst_webrtc_bundle(
                 control_reports.last_qos_report.bandwidth.queue_delay_us,
                 control_reports.last_qos_report.bandwidth.jitter_us,
             );
+            let player = feedback.player.counts();
+            eprintln!(
+                "NVST player-feedback active={} accepted={} rejected={} sentReliable={} sentPartial={} expired={} sendFailed={} partialOpen={}",
+                feedback.player.active(),
+                player.accepted,
+                player.rejected,
+                player.sent_reliable,
+                player.sent_partial,
+                player.expired,
+                player.send_failed,
+                control_partial_open,
+            );
             eprintln!(
                 "NVST frame-stage-timings {}",
                 feedback.frame_stage_timings().log_line()
