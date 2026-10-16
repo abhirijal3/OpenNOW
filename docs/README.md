@@ -8,6 +8,7 @@ changed doc gets a line here in the same turn. The protocol side's index is
 
 - `where-we-left-off.md`: the current checkpoint, what is done and open. Read first when resuming work.
 - `history.md`: decisions, real numbers and lessons from retired checkpoints and plans (2026-10-08 to 2026-10-12). Read to learn why something is the way it is.
+- `findings.md`: bugs noticed, failure scenarios worth a test and improvements worth making, from any agent (core value in `AGENTS.md`). Read when looking for what to fix or test next.
 
 ## The library and the POP
 

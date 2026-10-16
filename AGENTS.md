@@ -4,6 +4,21 @@ Scope note: Abhi's global `~/.claude/CLAUDE.md` rules (no code comments, dev-bas
 mobile handoff, etc.) are written for Maptician's JS/TS work. They do not apply in this
 repo. This file is the shared source of project rules for all agents working here.
 
+## Core value: build it so agents can run it
+
+Abhi builds Rasbari alone, around a full-time job in the US, for interest and business experience. It only works because AI agents do most of the building. He gives direction a few hours a week and can't watch it the rest of the time. So every piece of Rasbari is built so an agent can see what it is doing, prove it works and make it better without him in the loop. This comes before cleverness and before speed, in every repo.
+
+- It explains itself. Log every decision with what was decided, why, and the ids that tie one session together across repos (session id, user id, POP, GFN account). A bug has to be findable from logs and telemetry alone, without Abhi reproducing it.
+- It's tested before it's trusted. Every change ships with tests, every bug gets a regression test of the situation that caused it, and options get tried in simulation or on the test machines so the one that measured best is kept. Real numbers, never guesses.
+- It's watched. POP health, sessions, the database, errors and the frontend analytics land somewhere an agent can query. Anything that can break gets a check that notices before a player does.
+- It improves itself. Don't wait to be asked to find problems. Whenever you work here, write the bugs you noticed, the failure scenarios that deserve a test and the improvements worth making in `docs/findings.md`, and raise the important ones with Abhi in one line at the end of your answer. Fix small ones on the spot when the task's scope allows it.
+- Scale is Cloudflare's job. Spend effort on correctness, observability and tests, not on scaling machinery.
+- Abhi steers, and approves anything billed, live (a real GFN session), outward-facing or hard to undo. Everything else an agent should carry from noticed, to tested, to fixed, to verified.
+
+In this repo that means every GFN outcome (start failures, queue, terminations, token renewals) comes out as a stable, named result the POP and the orchestrator can log and act on.
+
+Set by Abhi on 2026-10-15, logged in `rasbari-platform/docs/notes/decisions.md`.
+
 ## Shared context: Claude Code, Codex, Gemini, and Antigravity
 
 `AGENTS.md` is the single source of truth for project rules and context. Codex discovers
