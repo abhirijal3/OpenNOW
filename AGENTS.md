@@ -19,6 +19,8 @@ In this repo that means every GFN outcome (start failures, queue, terminations, 
 
 Set by Abhi on 2026-10-15, logged in `rasbari-platform/docs/notes/decisions.md`.
 
+Every component and feature built here ships with its documentation in the same change: the `README.md` in its own folder, saying what it does, how to run and test it, the choices and why, and what is not done. Everything is linked so an agent sees a change's whole scope at once: each function's doc comment names the blueprint rule ids it implements (`WALLET-18`, `POPSW-13`), each test names the id it proves, and `pnpm trace <id>` in rasbari-platform finds every doc, code file and test across all five repos. Both are hard rules set by Abhi on 2026-10-16 for every Rasbari repo; how linking works is `rasbari-platform/docs/tracing.md`.
+
 ## Shared context: Claude Code, Codex, Gemini, and Antigravity
 
 `AGENTS.md` is the single source of truth for project rules and context. Codex discovers
