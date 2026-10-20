@@ -1860,6 +1860,13 @@ impl NvstVideoConfig {
         self.microphone_available
     }
 
+    /// The fixed video datagram size and SRTP profile handed to an encrypted relay.
+    /// @rule POPCTL-9
+    pub fn relay_video_datagram_bytes(&self) -> Option<u16> {
+        if self.srtp.profile() != NvstSrtpProfile::AeadAes256Gcm8 { return None; }
+        u16::try_from(self.video_packet_size + NVST_FEC_RTP_HEADER_ALLOWANCE + 8).ok()
+    }
+
     pub fn srtp_profile(&self) -> NvstSrtpProfile {
         self.srtp.profile()
     }
@@ -5558,11 +5565,17 @@ fn wire_overhead_bytes(peer: IpAddr) -> usize {
 }
 
 pub fn measured_video_packet_size(datagram_size: usize, peer: IpAddr) -> Option<usize> {
-    let ip_header_bytes = if peer.is_ipv4() { 20 } else { 40 };
-    let route_mtu = datagram_size
-        .checked_add(UDP_HEADER_BYTES)?
-        .checked_add(ip_header_bytes)?;
-    video_packet_size_for_vpn_mtu(peer, Some(route_mtu)).ok()
+    let _ = peer;
+    measured_video_packet_size_with_tag(datagram_size, SRTP_AEAD_AES_GCM_TAG_LEN)
+}
+
+/// Converts a UDP budget to the aligned ANNOUNCE attribute using the negotiated SRTP tag.
+/// @rule POPCTL-9
+pub fn measured_video_packet_size_with_tag(datagram_size: usize, tag_bytes: usize) -> Option<usize> {
+    if ![8, 16].contains(&tag_bytes) { return None; }
+    let packet = datagram_size.checked_sub(NVST_FEC_RTP_HEADER_ALLOWANCE + tag_bytes)?
+        .min(DEFAULT_NVST_VIDEO_PACKET_SIZE) / 16 * 16;
+    (packet >= MIN_NVST_VIDEO_PACKET_SIZE).then_some(packet)
 }
 
 fn video_packet_size_for_vpn_mtu(peer: IpAddr, route_mtu: Option<usize>) -> std::io::Result<usize> {
@@ -10095,6 +10108,27 @@ mod tests {
                 "{address} {datagram_size}"
             );
         }
+    }
+
+    #[test]
+    fn d2_measured_video_packet_size_with_tag_and_relay_video_datagram_bytes() {
+        for (tag, attribute, wire) in [(8, 1168, 1192), (16, 1168, 1200)] {
+            assert_eq!(measured_video_packet_size_with_tag(1200, tag), Some(attribute));
+            assert!(attribute + 16 + tag <= 1200);
+            assert_eq!(attribute + 16 + tag, wire);
+        }
+        assert_eq!(measured_video_packet_size_with_tag(1304, 8), Some(1280));
+        assert_eq!(measured_video_packet_size_with_tag(279, 8), None);
+        assert_eq!(measured_video_packet_size_with_tag(280, 8), Some(256));
+        assert_eq!(measured_video_packet_size_with_tag(287, 16), None);
+        assert_eq!(measured_video_packet_size_with_tag(1200, 10), None);
+        let mut handoff = legacy_handoff();
+        handoff["packetSize"] = json!(1168);
+        handoff["srtpProfile"] = json!("AEAD_AES_256_GCM_8");
+        let config = NvstVideoConfig::from_legacy_handoff(&handoff, None).unwrap();
+        assert_eq!(config.relay_video_datagram_bytes(), Some(1192));
+        handoff["srtpProfile"] = json!("AEAD_AES_256_GCM");
+        assert_eq!(NvstVideoConfig::from_legacy_handoff(&handoff, None).unwrap().relay_video_datagram_bytes(), None);
     }
 
     #[test]

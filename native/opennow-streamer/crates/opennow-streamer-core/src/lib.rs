@@ -200,6 +200,7 @@ pub struct Engine {
     raw_video_tap: Option<RawPacketTap>,
     raw_control_tap: Option<RawPacketTap>,
     native_player_profile: Option<[u8;40]>,
+    native_video_datagram_bytes: Option<u16>,
     native_player_timing: Option<[u8;12]>,
     raw_audio_tap: Option<opennow_streamer_transport::nvst::RawAudioTap>,
     nvst_feedback: Option<SharedNvstFeedback>,
@@ -240,6 +241,7 @@ impl Engine {
             raw_video_tap: None,
             raw_control_tap: None,
             native_player_profile: None,
+            native_video_datagram_bytes: None,
             native_player_timing: None,
             raw_audio_tap: None,
             nvst_feedback: None,
@@ -278,6 +280,10 @@ impl Engine {
         let feedback = self.nvst_feedback.as_ref().ok_or("no active NVST session")?;
         feedback.player.enqueue(bytes, Instant::now()).map_err(str::to_owned)
     }
+
+    /// The actual GFN video UDP size for the supported encrypted-relay profile.
+    /// @rule POPCTL-9
+    pub fn native_video_datagram_bytes(&self) -> Option<u16> { self.native_video_datagram_bytes }
 
     pub fn native_player_profile(&self) -> Option<[u8;40]> {self.native_player_profile}
     pub fn native_player_timing(&self) -> Option<[u8;12]> {
@@ -596,6 +602,15 @@ impl Engine {
                 self.native_player_profile = Some(config.player_profile());
                 self.native_player_timing = Some(config.player_timing_event());
                 if let Some(tap) = &self.raw_video_tap {
+                    let bytes = config.relay_video_datagram_bytes().ok_or_else(|| error(
+                        Some(&command.id), "relay-video-profile-unsupported",
+                        "Encrypted relay requires AEAD_AES_256_GCM_8"))?;
+                    if context.session.extra.get("networkTest")
+                        .and_then(|test| test.get("measuredDatagramBytes"))
+                        .and_then(Value::as_u64).is_some_and(|limit| u64::from(bytes) > limit) {
+                        return Err(error(Some(&command.id), "nvst-video-mtu-invalid", "Handoff exceeds measured route"));
+                    }
+                    self.native_video_datagram_bytes = Some(bytes);
                     config = config.with_raw_video_tap(Arc::clone(tap)).with_header_only(true);
                 }
                 if let Some(tap) = &self.raw_audio_tap {
@@ -931,6 +946,7 @@ impl Engine {
     fn stop_media_resources(&mut self) {
         self.nvst_feedback = None;
         self.native_player_profile = None;
+        self.native_video_datagram_bytes = None;
         self.native_player_timing = None;
         self.captured_input.clear();
         if let Some(worker) = self.event_worker.take()
@@ -1957,6 +1973,17 @@ mod tests {
 
     fn command(value: Value) -> Command {
         serde_json::from_value(value).expect("command")
+    }
+
+    #[test]
+    fn d2_native_video_datagram_bytes_reset_on_stop() {
+        let (sender, _) = std::sync::mpsc::channel();
+        let mut engine = test_engine(sender);
+        assert_eq!(engine.native_video_datagram_bytes(), None);
+        engine.native_video_datagram_bytes = Some(1192);
+        assert_eq!(engine.native_video_datagram_bytes(), Some(1192));
+        engine.stop_media_resources();
+        assert_eq!(engine.native_video_datagram_bytes(), None);
     }
 
     fn test_engine(events: Sender<Value>) -> Engine {

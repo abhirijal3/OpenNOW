@@ -95,6 +95,7 @@ int32_t opennow_gfn_send_control(OpennowGfn *gfn, const uint8_t *bytes, size_t l
 /* Zero means no fresh RTT measurement. Queue lifetime is 1..84000 us; the negotiated SCTP role retains its own reliability policy. */
 /* Non-secret 40-byte v2 player-profile wire image; -1 if no active profile. */
 int32_t opennow_gfn_player_timing(OpennowGfn *gfn, uint8_t *out, size_t cap);
+uint16_t opennow_gfn_video_datagram_bytes(OpennowGfn *gfn);
 int32_t opennow_gfn_player_profile(OpennowGfn *gfn, uint8_t *out, size_t cap);
 uint32_t opennow_gfn_upstream_rtt_us(OpennowGfn *gfn);
 int32_t opennow_gfn_send_control_deadline(OpennowGfn *gfn, const uint8_t *bytes, size_t len, uint32_t lifetime_us);

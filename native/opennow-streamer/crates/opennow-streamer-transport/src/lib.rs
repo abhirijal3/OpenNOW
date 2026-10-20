@@ -26,7 +26,7 @@ pub use nvst::{
     NvstReceiveEvent, NvstReceiverState, NvstRecovery, NvstSrtpProfile, NvstUdpReceiverControl,
     NvstUdpReceiverError, NvstUdpReceiverSession, NvstUnsupportedFeature, NvstVideoCodec,
     NvstVideoConfig, NvstVideoReceiver, ReservedNvstBundle, SharedNvstFeedback,
-    advertised_nvst_ipv4, measured_video_packet_size, nvst_video_packet_size,
+    advertised_nvst_ipv4, measured_video_packet_size, measured_video_packet_size_with_tag, nvst_video_packet_size,
     parse_nvst_video_handoff, reserve_nvst_mjolnir_udp_socket, reserve_nvst_udp_socket,
     spawn_nvst_mjolnir_receiver, spawn_nvst_udp_receiver, spawn_nvst_udp_receiver_with_socket,
 };

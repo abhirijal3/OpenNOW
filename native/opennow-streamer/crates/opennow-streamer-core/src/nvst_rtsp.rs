@@ -1096,10 +1096,11 @@ fn prepare_on_endpoint(
     })?;
     let video_packet_size = nvst_video_packet_size(video_peer_ip_parsed)
         .map_err(|error| NvstRtspError::new("nvst-video-mtu-invalid", error.to_string()))?;
-    let video_packet_size = measured_path_packet_size(context, video_peer_ip_parsed)
-        .map_or(video_packet_size, |measured| {
-            video_packet_size.min(measured)
-        });
+    let srtp_profile =
+        advertised_srtp_profile(&setup, &describe.body).unwrap_or("AEAD_AES_256_GCM_8");
+    let tag_bytes = if srtp_profile.ends_with("_8") { 8 } else { 16 };
+    let video_packet_size = measured_path_packet_size_for_tag(context, tag_bytes)?
+        .map_or(video_packet_size, |measured| video_packet_size.min(measured));
     opennow_streamer_protocol::log::log_line(
         "INFO",
         "transport",
@@ -1152,9 +1153,6 @@ fn prepare_on_endpoint(
     };
     let salt = format!("{key_id:024X}");
     let codec = negotiated_codec(context);
-    let srtp_profile =
-        advertised_srtp_profile(&setup, &describe.body).unwrap_or("AEAD_AES_256_GCM_8");
-
     let mut handoff = json!({
         "clientUdpPort":client_port,
         "packetSize":video_packet_size,
@@ -1579,14 +1577,18 @@ fn negotiated_fps(context: &SessionContext) -> u64 {
         .clamp(30, u64::from(super::MAX_STREAM_FPS))
 }
 
-fn measured_path_packet_size(context: &SessionContext, peer: IpAddr) -> Option<usize> {
-    let datagram = context
-        .session
-        .extra
-        .get("networkTest")?
-        .get("measuredDatagramBytes")?
-        .as_u64()?;
-    opennow_streamer_transport::measured_video_packet_size(usize::try_from(datagram).ok()?, peer)
+#[cfg(test)]
+fn measured_path_packet_size(context: &SessionContext, _peer: IpAddr) -> Option<usize> {
+    measured_path_packet_size_for_tag(context, 16).ok().flatten()
+}
+
+/// @rule POPCTL-9
+fn measured_path_packet_size_for_tag(context: &SessionContext, tag_bytes: usize) -> Result<Option<usize>, NvstRtspError> {
+    let Some(value) = context.session.extra.get("networkTest")
+        .and_then(|test| test.get("measuredDatagramBytes")) else { return Ok(None); };
+    let packet = value.as_u64().and_then(|bytes| usize::try_from(bytes).ok())
+        .and_then(|bytes| opennow_streamer_transport::measured_video_packet_size_with_tag(bytes, tag_bytes));
+    packet.map(Some).ok_or_else(|| NvstRtspError::new("nvst-video-mtu-invalid", "Measured route cannot carry a video packet"))
 }
 
 fn negotiated_codec(context: &SessionContext) -> String {
@@ -2709,23 +2711,17 @@ mod tests {
     }
 
     #[test]
-    fn announce_ignores_an_absent_or_unusable_measurement() {
-        let base = context();
-        let peer: IpAddr = "192.0.2.1".parse().unwrap();
-        assert_eq!(measured_path_packet_size(&base, peer), None);
-
-        for measured in [0_u64, 1, 12] {
-            let mut context = context();
-            context.session.extra.insert(
-                "networkTest".to_owned(),
-                json!({"measuredDatagramBytes":measured}),
-            );
-            assert_eq!(
-                measured_path_packet_size(&context, peer),
-                None,
-                "{measured}"
-            );
+    fn d2_announce_rejects_invalid_measurements_and_uses_the_negotiated_tag() {
+        assert_eq!(measured_path_packet_size_for_tag(&context(), 8).unwrap(), None);
+        for measured in [json!(0), json!(1), json!(279), json!(-1), json!("1200")] {
+            let mut ctx = context();
+            ctx.session.extra.insert("networkTest".to_owned(), json!({"measuredDatagramBytes": measured}));
+            assert!(measured_path_packet_size_for_tag(&ctx, 8).is_err());
         }
+        let mut ctx = context();
+        ctx.session.extra.insert("networkTest".to_owned(), json!({"measuredDatagramBytes":1304}));
+        assert_eq!(measured_path_packet_size_for_tag(&ctx, 8).unwrap(), Some(1280));
+        assert_eq!(measured_path_packet_size_for_tag(&ctx, 16).unwrap(), Some(1264));
     }
 
     #[test]

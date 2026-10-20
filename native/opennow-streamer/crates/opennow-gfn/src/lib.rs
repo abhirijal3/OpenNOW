@@ -269,6 +269,15 @@ pub unsafe extern "C" fn opennow_gfn_send_control(gfn: *mut OpennowGfn, bytes: *
     }
 }
 
+/// Returns the negotiated whole video UDP size, or zero until a supported relay session is prepared.
+/// @rule POPCTL-9
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_video_datagram_bytes(gfn: *mut OpennowGfn) -> u16 {
+    let Some(gfn) = (unsafe { gfn.as_ref() }) else { return 0; };
+    let guard = gfn.engine.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    guard.as_ref().and_then(|engine| engine.native_video_datagram_bytes()).unwrap_or(0)
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn opennow_gfn_player_profile(gfn:*mut OpennowGfn, out:*mut u8, cap:usize)->i32 {
     let Some(gfn) = (unsafe {gfn.as_ref()}) else {return -1};
@@ -693,4 +702,13 @@ mod tests {
         );
         unsafe { opennow_gfn_destroy(gfn) };
     }
+    #[test]
+    fn d2_opennow_gfn_video_datagram_bytes_is_unavailable_before_negotiation() {
+        assert_eq!(unsafe { opennow_gfn_video_datagram_bytes(ptr::null_mut()) }, 0);
+        let seen = Seen::default();
+        let gfn = unsafe { opennow_gfn_create(&callbacks(&seen)) };
+        assert_eq!(unsafe { opennow_gfn_video_datagram_bytes(gfn) }, 0);
+        unsafe { opennow_gfn_destroy(gfn) };
+    }
+
 }
