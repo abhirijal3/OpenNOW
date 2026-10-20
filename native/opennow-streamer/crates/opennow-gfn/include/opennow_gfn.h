@@ -116,6 +116,13 @@ int32_t opennow_gfn_mouse_button_at(OpennowGfn *, uint8_t, uint8_t, uint64_t);
 int32_t opennow_gfn_mouse_wheel_at(OpennowGfn *, int16_t, int16_t, uint64_t);
 int32_t opennow_gfn_gamepad_at(OpennowGfn *, const OpennowGfnGamepad *, uint64_t);
 
+/* @rule PLAYER-13: Clipboard UTF-8 text, 1..65536 bytes, no NUL. 0 means queued, -1 means
+ * invalid/unavailable/busy. No automatic Ctrl+V. Modifier releases precede text
+ * in the same bounded input queue. The game must have a focused text caret. */
+int32_t opennow_gfn_text(OpennowGfn *gfn, const uint8_t *bytes, size_t len);
+/* @rule PLAYER-13: 1 input ready, 0 unavailable, -1 invalid handle. Not a host capability probe. */
+int32_t opennow_gfn_text_available(OpennowGfn *gfn);
+
 int32_t opennow_gfn_key(OpennowGfn *gfn, uint16_t virtual_key, uint16_t modifiers, uint8_t pressed);
 int32_t opennow_gfn_mouse_move(OpennowGfn *gfn, int16_t delta_x, int16_t delta_y);
 int32_t opennow_gfn_mouse_abs(OpennowGfn *gfn, uint16_t x, uint16_t y, uint16_t width, uint16_t height);

@@ -124,6 +124,12 @@ impl CapturedInputQueue {
         }
     }
 
+    /// @rule PLAYER-13: Native input readiness for the POP clipboard-text adapter.
+    pub fn text_available(&self) -> bool {
+        self.text_ready.load(Ordering::Acquire)
+    }
+
+    /// @rule PLAYER-13: Queue one explicit paste atomically after modifier releases.
     pub fn submit_text(
         &self,
         bytes: &[u8],
@@ -136,10 +142,20 @@ impl CapturedInputQueue {
         if !self.text_ready.load(Ordering::Acquire) {
             return Err(TextInputError::Unavailable);
         }
-        if pending.len() >= CAPTURED_INPUT_CAPACITY {
+        // Paste arrives independently of the player's key releases. Queue releases
+        // on the same input path before Unicode so held Cmd/Ctrl cannot alter it.
+        const MODIFIERS: [u16; 8] = [0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0x5b, 0x5c];
+        if pending.len() + MODIFIERS.len() + 1 > CAPTURED_INPUT_CAPACITY {
             return Err(TextInputError::Busy);
         }
         let text = self.text_slot.submit(bytes)?;
+        for virtual_key in MODIFIERS {
+            pending.push_back(CapturedInputSample {
+                input: CapturedInput::Key { virtual_key, modifiers: 0, pressed: false },
+                captured_at: Instant::now(),
+                source_timestamp_us: None,
+            });
+        }
         pending.push_back(CapturedInputSample {
             input: CapturedInput::Text(text),
             captured_at: Instant::now(),

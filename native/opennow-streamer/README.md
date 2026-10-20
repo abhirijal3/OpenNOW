@@ -12,6 +12,18 @@ It takes one complete CloudMatch session context from `opennow-core`, reserves i
 - `opennow-streamer-transport`: Mjolnir SRTP plus the NVST-required ICE/DTLS/SCTP, RTCP and input. No platform dependency; it emits whole access units and Opus packets.
 - `opennow-streamer-hid`: controller HID encoding.
 
+## Explicit clipboard text (PLAYER-13)
+
+The C ABI exposes `opennow_gfn_text` and `opennow_gfn_text_available` for the
+POP's explicit paste operation. Valid 1..65536-byte UTF-8 text is queued through
+the existing native Unicode transport after modifier releases; invalid, busy,
+and unavailable submissions enqueue nothing. The game needs a focused text
+caret. No host clipboard overwrite or automatic Ctrl+V is performed.
+See `../../docs/protocol-integration.md` for return values and remaining gaps.
+Run `cargo test --manifest-path native/opennow-streamer/Cargo.toml --workspace`
+from the repository root; build with `cargo build --release -p opennow-gfn`
+using the same manifest. Live GFN acceptance remains unverified.
+
 ## Microphone upstream
 
 The native RTSP path requires the server's DESCRIBE to advertise

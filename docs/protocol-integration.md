@@ -21,6 +21,23 @@ Two programs do it:
   `include/opennow_gfn.h`) runs the stream: RTSPS, the Mjolnir video socket, the ICE/DTLS/SCTP bundle,
   input, QoS, recovery. The POP links it.
 
+## Explicit clipboard text (2026-10-19, PLAYER-13)
+
+`opennow_gfn_text` now exposes the existing bounded native Unicode submission
+path to the POP. It accepts 1..65536 bytes of valid UTF-8 with no NUL; 0 means
+queued, -1 means invalid, unavailable or busy. `opennow_gfn_text_available` is
+1 when native input is ready, 0 when unavailable, -1 for NULL. It does not
+measure the host's CustomImeConfig or game text-box acceptance.
+
+A successful submission atomically appends releases for both Shift/Ctrl/Alt/Win
+keys, then the Unicode payload to the shared input queue. Invalid/full/busy
+submissions append nothing. The existing lifecycle generation cancels pending
+text on stop/restart; the native transport chunks at UTF-8 character boundaries.
+This is typing into a focused caret, with no Ctrl+V and no clipboard overwrite.
+The POP logs only metadata. No custom-message clipboard API or reliable multi-
+POP clipboard forwarding is supplied here. ABI regression and streamer workspace
+checks run without GFN access; live acceptance remains unverified.
+
 ## Building
 
 ```

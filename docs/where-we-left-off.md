@@ -1,6 +1,23 @@
 # Where we left off
 
-## Current checkpoint: 2026-10-15 (Claude Code, v2.1 closed)
+## Current checkpoint: 2026-10-19 (Codex, clipboard-text adapter)
+
+On v2.1 HEAD 50257d7f, local/uncommitted: native Unicode text and readiness C ABI,
+atomic eight-modifier-release-before-text queueing, validation/busy/capacity and
+session-cancellation regressions (PLAYER-13). Protocol's single-POP production
+callback now invokes this ABI. Streamer workspace 545 tests pass; release library
+build passes. Logs `/tmp/rasbari-clipboard-opennow-{workspace,build}.log`.
+Details/limits `protocol-integration.md`; no core changes, live GFN session,
+deployment, push or commit. Protocol unit executables pass; full suite found the already-documented trunk
+metadata smoke timing flake (63465 checks), and one existing-binary rerun passes
+63428 checks; logs `/tmp/rasbari-clipboard-protocol-{all-test,smoke-rerun}.log`. Existing branches/dirty work preserved. Remaining: private clipboard
+custom-message API, reliable multi-POP paste forwarding, live host acceptance,
+and ordinary Windows Ctrl+V client interception. No OpenNOW background process
+remains. Final player focused checks: 134 cases/912 assertions pass; full evidence and
+remaining unrelated contracts-sync failure are in protocol checkpoint. Next:
+review changes; user-driven live acceptance only with authorization.
+
+## Previous checkpoint: 2026-10-15 (Claude Code, v2.1 closed)
 
 v2.1 committed and tagged on branch v2.1, after this morning's live run on OVH Illinois proved it (three
 sessions, the longest 825 s with 49,502 of 49,508 frames shown and no timeout; logs in the protocol repo at

@@ -139,6 +139,28 @@ fn push_input(gfn: *mut OpennowGfn, input: CapturedInput) -> i32 {
     }
 }
 
+/// @rule PLAYER-13: Clipboard text uses the existing bounded native Unicode queue; no host paste key.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_text(
+    gfn: *mut OpennowGfn, bytes: *const u8, len: usize,
+) -> i32 {
+    let Some(gfn) = (unsafe { gfn.as_ref() }) else { return -1; };
+    if bytes.is_null() || len == 0 || len > opennow_streamer_protocol::text_input::MAX_TEXT_BYTES {
+        return -1;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(bytes, len) };
+    if gfn.input.submit_text(bytes).is_ok() { 0 } else { -1 }
+}
+
+/// @rule PLAYER-13: Reports input-channel readiness, not acknowledgement by a game's text box.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn opennow_gfn_text_available(gfn: *mut OpennowGfn) -> i32 {
+    match unsafe { gfn.as_ref() } {
+        Some(gfn) => i32::from(gfn.input.text_available()),
+        None => -1,
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn opennow_gfn_create(
     callbacks: *const OpennowGfnCallbacks,
@@ -495,6 +517,62 @@ mod tests {
             on_video_packet: None,
             on_media: None,
             on_event: Some(record_event),
+        }
+    }
+
+    #[test]
+    // @rule PLAYER-13
+    fn clipboard_text_abi_checks_bounds_readiness_and_busy_without_partial_enqueue() {
+        let seen = Seen::default();
+        let gfn = unsafe { opennow_gfn_create(&callbacks(&seen)) };
+        let input = unsafe { &*gfn }.input.clone();
+        unsafe {
+            assert_eq!(opennow_gfn_text_available(ptr::null_mut()), -1);
+            assert_eq!(opennow_gfn_text_available(gfn), 0);
+            assert_eq!(opennow_gfn_text(gfn, b"paste".as_ptr(), 5), -1);
+            input.set_text_ready(1, true);
+            assert_eq!(opennow_gfn_text_available(gfn), 1);
+            assert_eq!(opennow_gfn_text(ptr::null_mut(), b"x".as_ptr(), 1), -1);
+            assert_eq!(opennow_gfn_text(gfn, ptr::null(), 1), -1);
+            for len in [0, 65537, usize::MAX] {
+                assert_eq!(opennow_gfn_text(gfn, b"x".as_ptr(), len), -1);
+            }
+            for bytes in [&b"a\0b"[..], &[0xff][..]] {
+                assert_eq!(opennow_gfn_text(gfn, bytes.as_ptr(), bytes.len()), -1);
+            }
+            assert!(input.take_sample().is_none());
+            let bytes = "café 世界 🦫\n".as_bytes();
+            assert_eq!(opennow_gfn_text(gfn, bytes.as_ptr(), bytes.len()), 0);
+            assert_eq!(opennow_gfn_text(gfn, b"other".as_ptr(), 5), -1);
+            for vk in [0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0x5b, 0x5c] {
+                assert_eq!(input.take_sample().unwrap().input,
+                    CapturedInput::Key { virtual_key: vk, modifiers: 0, pressed: false });
+            }
+            let CapturedInput::Text(text) = input.take_sample().unwrap().input else { panic!("text missing"); };
+            assert_eq!(text.as_str().as_bytes(), bytes);
+            assert!(input.take_sample().is_none());
+            input.set_text_ready(2, false);
+            assert!(text.is_cancelled());
+            assert_eq!(opennow_gfn_text(gfn, bytes.as_ptr(), bytes.len()), -1);
+            drop(text);
+            input.set_text_ready(3, true);
+            let max = vec![b'x'; 65536];
+            assert_eq!(opennow_gfn_text(gfn, max.as_ptr(), max.len()), 0);
+            input.set_text_ready(4, false);
+            assert!(input.take_sample().is_some()); // harmless releases may remain
+            input.clear();
+            input.set_text_ready(5, true);
+            for vk in 0..248 {
+                input.push(CapturedInput::Key { virtual_key: vk, modifiers: 0, pressed: true });
+            }
+            assert_eq!(opennow_gfn_text(gfn, b"full".as_ptr(), 4), -1);
+            for vk in 0..248 {
+                assert_eq!(input.take_sample().unwrap().input,
+                    CapturedInput::Key { virtual_key: vk, modifiers: 0, pressed: true });
+            }
+            assert!(input.take_sample().is_none());
+            assert_eq!(opennow_gfn_text(gfn, b"retry".as_ptr(), 5), 0);
+            opennow_gfn_destroy(gfn);
         }
     }
 
