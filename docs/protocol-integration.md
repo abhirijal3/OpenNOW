@@ -117,3 +117,12 @@ so what they touch on the POP side must be safe there. Sending on a UDP socket f
 - `integration-open-work.md`: what is still open on the library and POP side.
 - `same-seat-handover.md`: the live driver and reclaiming a running official-client seat.
 - `core-protocol.md`: the seat-booking program the POP starts first.
+
+
+## D2 measured video route (October 20, 2026)
+
+`POPCTL-9`, `POPSW-2`: the controller puts the player's selected video UDP budget in `session.networkTest.measuredDatagramBytes`. ANNOUNCE uses the negotiated SRTP tag length and 16-byte alignment; an explicit unusable measurement fails `nvst-video-mtu-invalid`. The raw encrypted-video tap requires `AEAD_AES_256_GCM_8` because that is the current protocol/player key format, and refuses other profiles explicitly. This does not remove ordinary receiver profile support. A prebuilt handoff must also fit the route budget.
+
+New additive C ABI `uint16_t opennow_gfn_video_datagram_bytes(OpennowGfn*)` returns the negotiated whole GCM8 UDP size, or zero for NULL/unprepared/stopped. The POP reads it after start, validates the budget and publishes that actual size to the player. Build the matching library and POP together; do not assume a rebuilt POP can link an older library. The getter locks only on the setup path; no per-packet work was added in OpenNOW.
+
+`cargo test --manifest-path native/opennow-streamer/Cargo.toml --workspace` passed 548 tests. `cargo build --release -p opennow-gfn --manifest-path native/opennow-streamer/Cargo.toml` passed. Logs `/tmp/rasbari-d2-rust-final-tests.log`, `/tmp/rasbari-d2-rust-build.log`. No live GFN seat was started by this chat. Full cross-repo flow, repair envelopes and exact native/controller tests: sibling `protocol/docs/v2/mtu-packet-sizing.md`.

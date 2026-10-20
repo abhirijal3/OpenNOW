@@ -66,3 +66,8 @@ cargo fmt --manifest-path native/opennow-streamer/Cargo.toml --all -- --check
 cargo clippy --manifest-path native/opennow-streamer/Cargo.toml --workspace --all-targets -- -D warnings
 cargo test --manifest-path native/opennow-streamer/Cargo.toml --workspace
 ```
+
+
+## D2 route-MTU negotiation
+
+`POPCTL-9`: the selected player's UDP budget reaches ANNOUNCE via `session.networkTest.measuredDatagramBytes`, with tag-aware alignment and explicit invalid-budget errors. The additive `opennow_gfn_video_datagram_bytes` C ABI reports the actual size for the GCM8 encrypted relay. Run the workspace tests and rebuild `opennow-gfn` before rebuilding the POP. Profile restrictions, results and setup-only getter semantics: `../../docs/protocol-integration.md`, D2 section. No live negotiation proof is implied.

@@ -38,3 +38,12 @@ changed doc gets a line here in the same turn. The protocol side's index is
 - `macos-client-input-audio.md`: client-side mouse handling and the audio pipeline. Read for input feel or audio buffering.
 - `macos-client-congestion.md`: bandwidth estimation, telemetry, policer detection, DSCP and ECN, heartbeat and liveness. Read for QoS reporting and rate behavior.
 - `official-client-baseline.md`: what NVIDIA's Windows client logged in one 2026-08-30 session (NACK numbers, recovery ladder, audio buffer, input types). Read for evidence when tuning against the official client.
+
+- `protocol-integration.md`: D2 tag-aware ANNOUNCE, actual datagram-size C ABI and explicit unsupported-profile errors.
+- `../native/opennow-streamer/README.md`: D2 library build/test entrypoint and route-MTU setup semantics.
+
+- `findings.md`: October 20 D2 invalid-measurement fallback fix and actual negotiated-size publication.
+
+- `where-we-left-off.md`: October 20 D2 layered completion, exact green checks, three unrelated controller failures and local/committed boundaries.
+
+- `where-we-left-off.md`: October 20 explicit D1/D2 completion and Abhi-authorized integration-agent compile/commit/push handoff; read before the combined build or push.
