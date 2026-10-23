@@ -599,8 +599,6 @@ impl Engine {
         })?;
         let nvst_config = match parse_nvst_video_handoff(&transport_context) {
             Ok(Some(mut config)) => {
-                self.native_player_profile = Some(config.player_profile());
-                self.native_player_timing = Some(config.player_timing_event());
                 if let Some(tap) = &self.raw_video_tap {
                     let bytes = config.relay_video_datagram_bytes().ok_or_else(|| error(
                         Some(&command.id), "relay-video-profile-unsupported",
@@ -610,7 +608,6 @@ impl Engine {
                         .and_then(Value::as_u64).is_some_and(|limit| u64::from(bytes) > limit) {
                         return Err(error(Some(&command.id), "nvst-video-mtu-invalid", "Handoff exceeds measured route"));
                     }
-                    self.native_video_datagram_bytes = Some(bytes);
                     config = config.with_raw_video_tap(Arc::clone(tap)).with_header_only(true);
                 }
                 if let Some(tap) = &self.raw_audio_tap {
@@ -659,6 +656,13 @@ impl Engine {
             rtsp.shutdown();
         }
         self.stop_media_resources();
+        if let Some(config) = nvst_config.as_ref() {
+            self.native_player_profile = Some(config.player_profile());
+            self.native_player_timing = Some(config.player_timing_event());
+            if self.raw_video_tap.is_some() {
+                self.native_video_datagram_bytes = config.relay_video_datagram_bytes();
+            }
+        }
         let stream_config = prepared_nvst
             .as_ref()
             .map(|prepared| prepared.media_config)
@@ -3514,6 +3518,36 @@ mod tests {
         })));
         assert_eq!(responses[0]["type"], "ok");
         assert_eq!(lifecycle_state(&engine), State::Idle);
+    }
+
+    /// @rule POPCTL-9
+    #[test]
+    fn relay_start_preserves_negotiated_video_metadata_until_stop() {
+        let peer = UdpSocket::bind("127.0.0.1:0").expect("relay peer");
+        let (sender, _) = std::sync::mpsc::channel();
+        let mut engine = test_engine(sender).with_raw_video_tap(Arc::new(|_: &[u8]| {}));
+        let mut context = synthetic_context("relay-start", json!([]));
+        context["session"]["networkTest"] = json!({"measuredDatagramBytes":1195});
+        context["nvstVideo"] = json!({
+            "clientUdpPort": unused_udp_port(),
+            "videoPeerIp": "127.0.0.1",
+            "videoPeerPort": peer.local_addr().unwrap().port(),
+            "srtpAesKeyHex": "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F",
+            "srtpSaltHex": "000000000000000000000001",
+            "srtpProfile": "AEAD_AES_256_GCM_8",
+            "packetSize": 1168,
+            "codec": "H264"
+        });
+        let expected = parse_nvst_video_handoff(&context).unwrap().unwrap();
+        let (responses, _) = engine.handle(command(json!({"id":"start", "type":"start", "context":context})));
+        assert_eq!(responses[0]["type"], "ok", "{responses:?}");
+        assert_eq!(engine.native_video_datagram_bytes(), Some(1192));
+        assert_eq!(engine.native_player_profile(), Some(expected.player_profile()));
+        assert!(engine.native_player_timing.is_some());
+        engine.stop("test complete");
+        assert_eq!(engine.native_video_datagram_bytes(), None);
+        assert_eq!(engine.native_player_profile(), None);
+        assert!(engine.native_player_timing.is_none());
     }
 
     #[test]

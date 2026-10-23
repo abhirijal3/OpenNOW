@@ -47,3 +47,7 @@ changed doc gets a line here in the same turn. The protocol side's index is
 - `where-we-left-off.md`: October 20 D2 layered completion, exact green checks, three unrelated controller failures and local/committed boundaries.
 
 - `where-we-left-off.md`: October 20 explicit D1/D2 completion and Abhi-authorized integration-agent compile/commit/push handoff; read before the combined build or push.
+
+- `protocol-integration.md`: October 23 startup metadata lifetime fix and real local UDP regression; read before changing negotiated size, profile or timing publication during start/stop.
+
+- `findings.md` and `where-we-left-off.md`: October 23 session 14 metadata-reset diagnosis, validation and hotfix state; read before retrying staging streams or changing start cleanup.
