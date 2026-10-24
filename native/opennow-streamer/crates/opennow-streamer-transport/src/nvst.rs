@@ -3009,8 +3009,7 @@ fn send_pending_nack(
         } else {
             "rtcp-generic"
         };
-        eprintln!(
-            "NVST NACK sent format={format} channel={} mediaSsrc={media_ssrc} missing={first}..={last}",
+        opennow_streamer_protocol::rlog!(Debug, "nack_sent", "format={format} channel={} media_ssrc={media_ssrc} missing={first}..={last}",
             channels.label(channel),
         );
     } else {
@@ -3223,8 +3222,7 @@ impl VideoAccessUnitAssembler {
             frame_header_size = payload.len() - picture_payload.len();
             if !self.first_start_payload_logged {
                 self.first_start_payload_logged = true;
-                eprintln!(
-                    "NVST first {} start payload: frame={} bytes={} frameHeader={} raw={}",
+                opennow_streamer_protocol::rlog!(Debug, "first_start_payload", "codec={} frame={} bytes={} frame_header={} raw={}",
                     self.codec.label(),
                     header.frame_index,
                     payload.len(),
@@ -3272,8 +3270,7 @@ impl VideoAccessUnitAssembler {
                 picture_payload = &picture_payload[..exact_payload_length];
             } else if !self.invalid_av1_length_logged {
                 self.invalid_av1_length_logged = true;
-                eprintln!(
-                    "NVST AV1 final-packet length hint ignored: reported={reported} frameHeader={frame_header_size} available={}",
+                opennow_streamer_protocol::rlog!(Warn, "av1_length_hint_ignored", "reported={reported} frame_header={frame_header_size} available={} next=use_available",
                     picture_payload.len()
                 );
             }
@@ -3310,8 +3307,7 @@ impl VideoAccessUnitAssembler {
         strip_trailing_access_unit_delimiter(self.codec, &mut bytes);
         if !self.first_access_unit_logged {
             self.first_access_unit_logged = true;
-            eprintln!(
-                "NVST first {} access unit: frame={} bytes={} keyframeHint={} raw={}",
+            opennow_streamer_protocol::rlog!(Debug, "first_access_unit", "codec={} frame={} bytes={} keyframe_hint={} raw={}",
                 self.codec.label(),
                 header.frame_index,
                 bytes.len(),
@@ -4122,8 +4118,7 @@ impl FecReorderBuffer {
                         let (first_missing, last_missing) = pending
                             .first_missing_data_run()
                             .expect("failed FEC reconstruction has missing data");
-                        eprintln!(
-                            "NVST FEC reconstruction deferred to NACK: frame={} block={}/{} data={} parity={} missing={}..={} reason={reason:?}",
+                        opennow_streamer_protocol::rlog!(Debug, "fec_deferred_to_nack", "frame={} block={}/{} data={} parity={} missing={}..={} reason={reason:?}",
                             pending.layout.frame_index,
                             pending.layout.block_index,
                             pending.layout.last_block_index,
@@ -5789,7 +5784,7 @@ fn bind_nvst_udp(bind_ip: IpAddr, port: u16) -> std::io::Result<UdpSocket> {
         if let Ok(fd) = fd_text.parse::<std::os::unix::io::RawFd>() {
             use std::os::unix::io::FromRawFd;
             // A legacy parent can dup the probe socket onto this fd so native never rebinds.
-            eprintln!("NVST inheriting video UDP socket from fd {fd}");
+            opennow_streamer_protocol::rlog!(Info, "video_socket_inherited", "fd={fd}");
             return Ok(unsafe { UdpSocket::from_raw_fd(fd) });
         }
     }
@@ -5817,8 +5812,7 @@ fn bind_nvst_udp_socket(bind_ip: IpAddr, port: u16) -> std::io::Result<UdpSocket
     }
     if let Err(error) = socket.set_recv_buffer_size(NVST_UDP_RECEIVE_BUFFER_BYTES) {
         log_udp_error("receive-buffer", port, &error);
-        eprintln!(
-            "NVST could not enlarge UDP receive buffer to {NVST_UDP_RECEIVE_BUFFER_BYTES} bytes: {error}"
+        opennow_streamer_protocol::rlog!(Warn, "udp_receive_buffer_not_enlarged", "wanted_bytes={NVST_UDP_RECEIVE_BUFFER_BYTES} error={error} next=continue_with_default"
         );
     }
     if let Err(error) = socket.bind(&SocketAddr::new(bind_ip, port).into()) {
@@ -6093,13 +6087,10 @@ pub fn spawn_nvst_udp_receiver_with_socket(
     };
     let socket = match reserved_socket {
         Some(socket) => {
-            eprintln!(
-                "NVST using UDP socket reserved before ANNOUNCE ({})",
-                socket
+            opennow_streamer_protocol::rlog!(Info, "video_socket_reserved_used", "video_port={}", socket
                     .local_addr()
-                    .map(|addr| addr.to_string())
-                    .unwrap_or_else(|_| "unknown".to_owned())
-            );
+                    .map(|addr| addr.port().to_string())
+                    .unwrap_or_else(|_| "unknown".to_owned()));
             socket
         }
         None => {
@@ -6146,14 +6137,13 @@ pub fn spawn_nvst_mjolnir_receiver(
 ) -> Result<NvstUdpReceiverSession, NvstUdpReceiverError> {
     opennow_streamer_protocol::log::diagnostic(
         "INFO",
-        "transport",
+        "video_receiver_arming",
         &format!(
-            "NVST Mjolnir raw-SRTP video receiver arming on {} peer={}",
+            "video_port={}",
             socket
                 .local_addr()
-                .map(|addr| addr.to_string())
+                .map(|addr| addr.port().to_string())
                 .unwrap_or_else(|_| "unknown".to_owned()),
-            config.video_peer,
         ),
     );
     spawn_receiver_thread(
@@ -6298,12 +6288,7 @@ fn prepare_nvst_webrtc_bundle(
         api.start_dtls(true)
             .map_err(|error| NvstUdpReceiverError::WebrtcBundle(error.to_string()))?;
     }
-    eprintln!(
-        "NVST control/audio bundle armed (local={}, peer={}, remoteFingerprintBytes={})",
-        physical_local,
-        bundle_peer,
-        fingerprint.len()
-    );
+    opennow_streamer_protocol::rlog!(Info, "control_bundle_armed", "remote_fingerprint_bytes={}", fingerprint.len());
     Ok(rtc)
 }
 
@@ -6570,16 +6555,13 @@ fn finish_nvst_input_handshake(
             ));
             return false;
         }
-        eprintln!(
-            "NVST cursor capture tx: channel={} command=0x0308 enabled=true reason=input-activation",
+        opennow_streamer_protocol::rlog!(Debug, "cursor_capture_enabled", "channel={} command=0x0308 reason=input_activation",
             channels.label(channels.control_reliable),
         );
-        eprintln!(
-            "NVST remote cursor tracking tx: channel={} command=0x030d enabled=true reason=input-activation",
+        opennow_streamer_protocol::rlog!(Debug, "cursor_tracking_enabled", "channel={} command=0x030d reason=input_activation",
             channels.label(channels.control_reliable),
         );
-        eprintln!(
-            "NVST client state tx: channel={} window_state=19 system_state=0 frame=0",
+        opennow_streamer_protocol::rlog!(Debug, "client_state_sent", "channel={} window_state=19 system_state=0 frame=0",
             channels.label(channels.control_reliable),
         );
         input_state.mark_activation_sent();
@@ -6616,7 +6598,7 @@ fn send_nvst_captured_input(
     let failed = result.is_err();
     if let Err(error) = &result {
         *codec = previous_codec;
-        eprintln!("NVST input packet rejected: {error}");
+        opennow_streamer_protocol::rlog!(Warn, "input_packet_rejected", "error={error} next=drop_packet");
     }
     if let Some(reply) = reply {
         let _ = reply.send(result.map_err(|_| TransportError::InputNotReady));
@@ -6764,8 +6746,7 @@ fn pump_hid_pending(
             published = false;
         }
         if faulted {
-            eprintln!(
-                "Sony source in slot {slot} overflowed its bounded mailbox and was neutralized"
+            opennow_streamer_protocol::rlog!(Warn, "controller_mailbox_overflowed", "slot={slot} next=neutralize_source"
             );
         }
     }
@@ -6951,7 +6932,7 @@ fn run_nvst_webrtc_bundle(
                         && let Some(channels) = input_channels
                         && !channels.send_text(&mut rtc, &text, timestamp_us)
                     {
-                        eprintln!("NVST text submission rejected by reliable channel");
+                        opennow_streamer_protocol::rlog!(Warn, "text_submission_rejected", "reason=reliable_channel_refused");
                     }
                 }
                 Ok(UdpReceiverCommand::SendInput { bytes, reply }) => {
@@ -6991,16 +6972,12 @@ fn run_nvst_webrtc_bundle(
                                         })
                                         .collect::<Vec<_>>()
                                         .join(",");
-                                    eprintln!(
-                                        "NVST native input rx: events=[{names}] bytes={} raw={}",
+                                    opennow_streamer_protocol::rlog!(Debug, "native_input_received", "events=[{names}] bytes={}",
                                         bytes.len(),
-                                        diagnostic_hex(&bytes, 128),
                                     );
                                 }
-                                Err(error) => eprintln!(
-                                    "NVST native input rx undecodable: error={error} bytes={} raw={}",
+                                Err(error) => opennow_streamer_protocol::rlog!(Debug, "native_input_undecodable", "error={error} bytes={}",
                                     bytes.len(),
-                                    diagnostic_hex(&bytes, 128),
                                 ),
                             }
                         }
@@ -7018,11 +6995,9 @@ fn run_nvst_webrtc_bundle(
                             &event_sender,
                             |message| {
                                 if should_log {
-                                    eprintln!(
-                                        "NVST encoded input tx: route={:?} bytes={} raw={}",
+                                    opennow_streamer_protocol::rlog!(Debug, "encoded_input_sent", "route={:?} bytes={}",
                                         message.route,
                                         message.bytes.len(),
-                                        diagnostic_hex(&message.bytes, 128),
                                     );
                                 }
                                 channels.send_encoded(&mut rtc, message)
@@ -7070,7 +7045,7 @@ fn run_nvst_webrtc_bundle(
             if let Some(channels) = input_channels
                 && !channels.send_keepalive(&mut rtc, 0)
             {
-                eprintln!("NVST control keepalive could not be queued");
+                opennow_streamer_protocol::rlog!(Warn, "control_keepalive_not_queued", "next=retry_next_interval");
             }
             control_keepalive_at = next_control_keepalive(now);
         }
@@ -7142,7 +7117,7 @@ fn run_nvst_webrtc_bundle(
                             if udp_icmp_port_unreachable(&error) {
                                 continue;
                             }
-                            eprintln!("NVST ICE send failed: {error}");
+                            opennow_streamer_protocol::rlog!(Error, "ice_send_failed", "error={error} next=continue");
                             forward_optional(&event_sender, receiver.stop());
                             break 'bundle;
                         }
@@ -7160,7 +7135,7 @@ fn run_nvst_webrtc_bundle(
                 let sent_at = Instant::now();
                 if let Err(error) = socket.send_to(&natt, bundle_peer) {
                     if !udp_icmp_port_unreachable(&error) {
-                        eprintln!("NVST NATT send failed: {error}");
+                        opennow_streamer_protocol::rlog!(Error, "natt_send_failed", "error={error} next=continue");
                         forward_optional(&event_sender, receiver.stop());
                         break 'bundle;
                     }
@@ -7174,8 +7149,7 @@ fn run_nvst_webrtc_bundle(
             };
             hole_punch_pings += 1;
             if hole_punch_pings == 1 || hole_punch_pings % 50 == 0 {
-                eprintln!(
-                    "NVST hole-punch ping={hole_punch_pings} dest={bundle_peer} iceBurst={} iceBytes={ice_bytes} nattBytes={} credentials=redacted",
+                opennow_streamer_protocol::rlog!(Debug, "hole_punch_ping", "ping={hole_punch_pings} ice_burst={} ice_bytes={ice_bytes} natt_bytes={}",
                     if dtls_ready { 0 } else { 3 },
                     natt.as_ref().map_or(0, Vec::len),
                 );
@@ -7287,8 +7261,7 @@ fn run_nvst_webrtc_bundle(
                     control_reports.last_qos_report.bandwidth.jitter_us,
                 ),
             );
-            eprintln!(
-                "NVST control-stats elapsed={:.1}s frameAck={} lastAck={:?} pacing={frame_pacing_reports_sent} qos={} assembledBytesAtLastQos={} qosBweKbps={} qosUtilPercent={} qosOwdUs={} qosJitterUs={}",
+            opennow_streamer_protocol::rlog!(Debug, "control_stats", "elapsed={:.1}s frame_ack={} last_ack={:?} pacing={frame_pacing_reports_sent} qos={} assembled_bytes_at_last_qos={} qos_bwe_kbps={} qos_util_percent={} qos_owd_us={} qos_jitter_us={}",
                 now.saturating_duration_since(control_stats_origin)
                     .as_secs_f64(),
                 control_reports.frame_acks_sent,
@@ -7304,8 +7277,7 @@ fn run_nvst_webrtc_bundle(
                 control_reports.last_qos_report.bandwidth.jitter_us,
             );
             let player = feedback.player.counts();
-            eprintln!(
-                "NVST player-feedback active={} accepted={} rejected={} sentReliable={} sentPartial={} expired={} sendFailed={} partialOpen={}",
+            opennow_streamer_protocol::rlog!(Debug, "player_feedback_stats", "active={} accepted={} rejected={} sent_reliable={} sent_partial={} expired={} send_failed={} partial_open={}",
                 feedback.player.active(),
                 player.accepted,
                 player.rejected,
@@ -7315,8 +7287,7 @@ fn run_nvst_webrtc_bundle(
                 player.send_failed,
                 control_partial_open,
             );
-            eprintln!(
-                "NVST frame-stage-timings {}",
+            opennow_streamer_protocol::rlog!(Debug, "frame_stage_timings", "{}",
                 feedback.frame_stage_timings().log_line()
             );
             last_control_stats_log = now;
@@ -7333,8 +7304,7 @@ fn run_nvst_webrtc_bundle(
             if admitted {
                 rtcp_reports_sent += 1;
                 if rtcp_reports_sent == 1 || rtcp_reports_sent % 10 == 0 {
-                    eprintln!(
-                        "NVST rtcp1 RR sent={rtcp_reports_sent} mediaSsrc={} highestSeq={}",
+                    opennow_streamer_protocol::rlog!(Debug, "rtcp_receiver_report_sent", "sent={rtcp_reports_sent} media_ssrc={} highest_seq={}",
                         report_block.media_ssrc, report_block.highest_sequence,
                     );
                 }
@@ -7439,11 +7409,7 @@ fn run_nvst_webrtc_bundle(
                     if outbound_datagrams <= 8
                         || (verbose_diagnostics_enabled() && outbound_datagrams % 50 == 0)
                     {
-                        eprintln!(
-                            "NVST WebRTC outbound={outbound_datagrams} kind={kind} dest={} bytes={}",
-                            bundle_peer,
-                            transmit.contents.len()
-                        );
+                        opennow_streamer_protocol::rlog!(Debug, "webrtc_datagram_sent", "count={outbound_datagrams} kind={kind} bytes={}", transmit.contents.len());
                     }
                     if let Err(error) = socket.send_to(&transmit.contents, bundle_peer) {
                         if udp_icmp_port_unreachable(&error) {
@@ -7457,7 +7423,7 @@ fn run_nvst_webrtc_bundle(
                                 .send(NvstReceiveEvent::MicrophoneError(error.to_string()));
                             continue;
                         }
-                        eprintln!("NVST WebRTC send failed: {error}");
+                        opennow_streamer_protocol::rlog!(Error, "webrtc_send_failed", "error={error} next=continue");
                         forward_optional(&event_sender, receiver.stop());
                         break 'bundle;
                     }
@@ -7478,14 +7444,14 @@ fn run_nvst_webrtc_bundle(
                             "nvst-ice",
                             &format!("state={state:?}"),
                         );
-                        eprintln!("NVST ICE state: {state:?}");
+                        opennow_streamer_protocol::rlog!(Info, "ice_state_changed", "state={state:?}");
                         // Official GFN treats hole-punch / ICE receive failure as
                         // non-fatal. Media is gated on DTLS, not ICE success.
                     }
                     Event::Connected => {
                         dtls_ready = true;
                         let _ = event_sender.send(NvstReceiveEvent::TransportReady("dtls"));
-                        eprintln!("NVST DTLS handshake complete; waiting for SRTP/Mjolnir");
+                        opennow_streamer_protocol::rlog!(Info, "dtls_handshake_completed", "next=wait_for_srtp");
                         if !sctp_started {
                             sctp_started = true;
                             sctp_started_at = Some(Instant::now());
@@ -7494,15 +7460,14 @@ fn run_nvst_webrtc_bundle(
                             rtcp_channel = channels.rtcp;
                             input_channels = Some(channels);
                             let _ = event_sender.send(NvstReceiveEvent::TransportReady("sctp"));
-                            eprintln!(
-                                "NVST SCTP started with {} data channels",
+                            opennow_streamer_protocol::rlog!(Info, "sctp_started", "data_channels={}",
                                 6 + usize::from(channels.cursor.is_some())
                                     + usize::from(channels.rtcp.is_some())
                             );
                         }
                     }
                     Event::ChannelOpen(id, label) => {
-                        eprintln!("NVST data channel open: id={id:?} label={label}");
+                        opennow_streamer_protocol::rlog!(Info, "data_channel_opened", "id={id:?} label={label}");
                         if let Some(channels) = input_channels {
                             if id == channels.control_reliable {
                                 control_keepalive_at = Instant::now();
@@ -7558,8 +7523,7 @@ fn run_nvst_webrtc_bundle(
                             };
                             for message in cursor_messages {
                                 cursor_capture.notify_native(Instant::now(),&message);
-                                eprintln!(
-                                    "NVST cursor wire rx: channel={label} id={:?} command=0x{:04x} offset={} cursorId={:?} position={:?} visible={:?} bytes={} raw={}",
+                                opennow_streamer_protocol::rlog!(Debug, "cursor_wire_received", "channel={label} id={:?} command=0x{:04x} offset={} cursor_id={:?} position={:?} visible={:?} bytes={} raw={}",
                                     data.id,
                                     message.command,
                                     message.offset,
@@ -7570,8 +7534,7 @@ fn run_nvst_webrtc_bundle(
                                     diagnostic_hex(&message.raw, 512),
                                 );
                                 if let Some(cursor) = message.normalized {
-                                    eprintln!(
-                                        "NVST cursor dispatch: source={label} type={} id={} bytes={} raw={}",
+                                    opennow_streamer_protocol::rlog!(Debug, "cursor_dispatched", "source={label} type={} id={} bytes={} raw={}",
                                         cursor[0],
                                         cursor[1],
                                         cursor.len(),
@@ -7583,15 +7546,13 @@ fn run_nvst_webrtc_bundle(
 
                             if Some(data.id) == channels.cursor {
                                 if !valid_cursor_channel_message(&data.data) {
-                                    eprintln!(
-                                        "NVST malformed cursor-channel notification ignored: bytes={}",
+                                    opennow_streamer_protocol::rlog!(Warn, "cursor_notification_malformed", "bytes={} next=ignore",
                                         data.data.len(),
                                     );
                                     continue;
                                 }
                                 cursor_capture.notify(Instant::now());
-                                eprintln!(
-                                    "NVST cursor-channel raw rx: id={:?} bytes={} type={:?} cursorId={:?} raw={}",
+                                opennow_streamer_protocol::rlog!(Debug, "cursor_channel_received", "id={:?} bytes={} type={:?} cursor_id={:?} raw={}",
                                     data.id,
                                     data.data.len(),
                                     data.data.first(),
@@ -7604,8 +7565,7 @@ fn run_nvst_webrtc_bundle(
                             }
 
                             if verbose_diagnostics_enabled() {
-                                eprintln!(
-                                    "NVST data channel rx: channel={label} id={:?} bytes={} raw={}",
+                                opennow_streamer_protocol::rlog!(Debug, "data_channel_received", "channel={label} id={:?} bytes={} raw={}",
                                     data.id,
                                     data.data.len(),
                                     diagnostic_hex(&data.data, 128),
@@ -7618,8 +7578,7 @@ fn run_nvst_webrtc_bundle(
                         {
                             pending_input_version = Some(version);
                         } else if Some(data.id) == rtcp_channel {
-                            eprintln!(
-                                "NVST rtcp1 inbound: id={:?} binary={} bytes={}",
+                            opennow_streamer_protocol::rlog!(Debug, "rtcp_channel_received", "id={:?} binary={} bytes={}",
                                 data.id,
                                 data.binary,
                                 data.data.len(),
@@ -7722,7 +7681,7 @@ fn run_nvst_webrtc_bundle(
                     _ => {}
                 },
                 Err(error) => {
-                    eprintln!("NVST WebRTC bundle failed: {error}");
+                    opennow_streamer_protocol::rlog!(Error, "webrtc_bundle_failed", "error={error} next=continue");
                     forward_optional(&event_sender, receiver.stop());
                     break 'bundle;
                 }
@@ -7740,14 +7699,14 @@ fn run_nvst_webrtc_bundle(
         };
         if wait.is_zero() {
             if let Err(error) = rtc.handle_input(Input::Timeout(Instant::now())) {
-                eprintln!("NVST WebRTC timer failed: {error}");
+                opennow_streamer_protocol::rlog!(Error, "webrtc_timer_failed", "error={error} next=continue");
                 forward_optional(&event_sender, receiver.stop());
                 break 'bundle;
             }
         } else {
             if applied_wait != Some(wait) {
                 if let Err(error) = socket.set_read_timeout(Some(wait)) {
-                    eprintln!("NVST UDP timeout configuration failed: {error}");
+                    opennow_streamer_protocol::rlog!(Error, "udp_timeout_config_failed", "error={error} next=continue");
                     forward_optional(&event_sender, receiver.stop());
                     break 'bundle;
                 }
@@ -7770,8 +7729,7 @@ fn run_nvst_webrtc_bundle(
                     if inbound_datagrams == 1
                         || (verbose_diagnostics_enabled() && inbound_datagrams % 50 == 0)
                     {
-                        eprintln!(
-                            "NVST WebRTC inbound={inbound_datagrams} source={source} bytes={length} dtlsReady={dtls_ready}"
+                        opennow_streamer_protocol::rlog!(Debug, "webrtc_datagram_received", "count={inbound_datagrams} bytes={length} dtls_ready={dtls_ready}"
                         );
                     }
                     if source != bundle_peer {
@@ -7793,7 +7751,7 @@ fn run_nvst_webrtc_bundle(
                         if let Err(error) = socket.send_to(b"PONG", source)
                             && !udp_icmp_port_unreachable(&error)
                         {
-                            eprintln!("NVST PONG send failed: {error}");
+                            opennow_streamer_protocol::rlog!(Error, "pong_send_failed", "error={error} next=continue");
                             forward_optional(&event_sender, receiver.stop());
                             break 'bundle;
                         }
@@ -7814,7 +7772,7 @@ fn run_nvst_webrtc_bundle(
                     let contents = match datagram[..length].try_into() {
                         Ok(value) => value,
                         Err(error) => {
-                            eprintln!("NVST dropping oversized UDP packet: {error}");
+                            opennow_streamer_protocol::rlog!(Warn, "udp_packet_oversized", "error={error} next=drop_packet");
                             continue;
                         }
                     };
@@ -7832,7 +7790,7 @@ fn run_nvst_webrtc_bundle(
                             contents,
                         },
                     )) {
-                        eprintln!("NVST WebRTC handle_input failed: {error}");
+                        opennow_streamer_protocol::rlog!(Error, "webrtc_input_failed", "error={error} next=continue");
                         forward_optional(&event_sender, receiver.stop());
                         break 'bundle;
                     }
@@ -7861,8 +7819,7 @@ fn run_nvst_webrtc_bundle(
             None
         };
         if timeout.is_some() {
-            eprintln!(
-                "NVST WebRTC timeout counters: inbound={inbound_datagrams}, dtlsReady={dtls_ready}"
+            opennow_streamer_protocol::rlog!(Warn, "webrtc_timeout", "inbound={inbound_datagrams} dtls_ready={dtls_ready}"
             );
         }
         forward_optional(&event_sender, timeout);
@@ -7969,7 +7926,7 @@ fn run_nvst_udp_receiver(
                 // can make the relay retain its legacy route instead of publishing Mjolnir.
                 let mut transaction_id = [0_u8; 12];
                 if let Err(error) = getrandom::fill(&mut transaction_id) {
-                    eprintln!("NVST NATT transaction generation failed: {error}");
+                    opennow_streamer_protocol::rlog!(Error, "natt_transaction_failed", "error={error} next=continue");
                     forward_optional(&event_sender, receiver.stop());
                     return;
                 }
@@ -7983,7 +7940,7 @@ fn run_nvst_udp_receiver(
                 if let Err(error) = socket.send_to(&ping, receiver.config.video_peer) {
                     if !udp_icmp_port_unreachable(&error) {
                         log_udp_error("video-natt-send", local_port, &error);
-                        eprintln!("NVST NATT send failed: {error}");
+                        opennow_streamer_protocol::rlog!(Error, "natt_send_failed", "error={error} next=continue");
                         forward_optional(&event_sender, receiver.stop());
                         return;
                     }
@@ -7997,7 +7954,7 @@ fn run_nvst_udp_receiver(
                 {
                     if !udp_icmp_port_unreachable(&error) {
                         log_udp_error("video-ping-send", local_port, &error);
-                        eprintln!("NVST ping send failed: {error}");
+                        opennow_streamer_protocol::rlog!(Error, "ping_send_failed", "error={error} next=continue");
                         forward_optional(&event_sender, receiver.stop());
                         return;
                     }
@@ -8020,10 +7977,7 @@ fn run_nvst_udp_receiver(
                         length,
                         transport_origin,
                     );
-                    eprintln!(
-                        "NVST raw-SRTP inbound first datagram: source={source} bytes={length} peer={}",
-                        receiver.config.video_peer
-                    );
+                    opennow_streamer_protocol::rlog!(Info, "video_first_datagram", "bytes={length}");
                 }
                 let expected_source = receiver.config.accepts_video_source(source);
                 let authenticated_before = receiver.last_authenticated_packet.is_some();
@@ -8054,7 +8008,7 @@ fn run_nvst_udp_receiver(
                                 && let Err(error) = socket.send_to(&response, source)
                                 && !udp_icmp_port_unreachable(&error)
                             {
-                                eprintln!("NVST STUN response send failed: {error}");
+                                opennow_streamer_protocol::rlog!(Error, "stun_response_send_failed", "error={error} next=continue");
                                 forward_optional(&event_sender, receiver.stop());
                                 return;
                             }
@@ -8121,7 +8075,7 @@ fn run_nvst_udp_receiver(
         if let Some(report) = receiver.poll_receiver_report(now) {
             if let Err(error) = socket.send_to(&report, receiver.config.video_peer) {
                 if !udp_icmp_port_unreachable(&error) {
-                    eprintln!("NVST receiver report send failed: {error}");
+                    opennow_streamer_protocol::rlog!(Error, "receiver_report_send_failed", "error={error} next=continue");
                     forward_optional(&event_sender, receiver.stop());
                     return;
                 }
@@ -8140,8 +8094,7 @@ fn run_nvst_udp_receiver(
                     receiver.config.video_peer.port()
                 ),
             );
-            eprintln!(
-                "NVST rx-stats {} inbound={inbound_datagrams} pings={pings_sent} rr={receiver_reports_sent}",
+            opennow_streamer_protocol::rlog!(Debug, "rx_stats", "{} inbound={inbound_datagrams} pings={pings_sent} rr={receiver_reports_sent}",
                 receiver.stats_line(stats_origin),
             );
         }
@@ -8156,14 +8109,13 @@ fn run_nvst_udp_receiver(
                     receiver.stats_line(stats_origin)
                 ),
             );
-            eprintln!(
-                "NVST transport timeout counters: pings={pings_sent}, inbound={inbound_datagrams}, stunHandled={handled_stun}, stunInvalid={invalid_stun}, nonStun={non_stun}, wrongSource={wrong_source}"
+            opennow_streamer_protocol::rlog!(Warn, "transport_timeout", "pings={pings_sent} inbound={inbound_datagrams} stun_handled={handled_stun} stun_invalid={invalid_stun} non_stun={non_stun} wrong_source={wrong_source}"
             );
             if inbound_datagrams == 0 {
                 opennow_streamer_protocol::log::diagnostic(
                     "WARN",
-                    "transport",
-                    "NVST video UDP path received no datagrams; audio/control may still work. Check firewall/VPN routing and UDP port ownership. No video has reached SRTP authentication or decoding.",
+                    "video_path_silent",
+                    "no_video_datagrams=true audio_control_may_work=true check=firewall_vpn_udp_port next=wait",
                 );
             }
         }

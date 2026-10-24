@@ -327,7 +327,13 @@ pub fn log_async(level: &'static str, area: &'static str, message: &str) {
 /// captures and in the embedded Qt file sink. Never pass credentials or payloads.
 pub fn diagnostic(level: &'static str, area: &'static str, message: &str) {
     log_async(level, area, message);
-    eprintln!("{message}");
+    let level = match level {
+        "ERROR" => crate::rlog::Level::Error,
+        "WARN" => crate::rlog::Level::Warn,
+        "DEBUG" => crate::rlog::Level::Debug,
+        _ => crate::rlog::Level::Info,
+    };
+    crate::rlog::emit(level, area, format_args!("{message}"));
 }
 
 /// Appends the first hit for `key` and then every [`THROTTLE_EVERY`]th

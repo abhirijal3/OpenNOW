@@ -413,17 +413,14 @@ impl Engine {
                     format!("failed to reserve NVST UDP socket: {bind_error}"),
                 )
             })?;
-            eprintln!(
-                "NVST reserved video UDP socket on {} (Mjolnir on {})",
-                bundle
+            opennow_streamer_protocol::rlog!(Info, "video_socket_reserved", "video_port={} mjolnir_port={}", bundle
                     .local_addr()
-                    .map(|addr| addr.to_string())
+                    .map(|addr| addr.port().to_string())
                     .unwrap_or_else(|_| "unknown".to_owned()),
                 bundle
                     .mjolnir_local_addr()
-                    .map(|addr| addr.to_string())
-                    .unwrap_or_else(|_| "unknown".to_owned()),
-            );
+                    .map(|addr| addr.port().to_string())
+                    .unwrap_or_else(|_| "unknown".to_owned()),);
             self.reserved_nvst_bundle = Some(bundle);
         }
         let bundle = self.reserved_nvst_bundle.as_mut().ok_or_else(|| {
@@ -752,15 +749,13 @@ impl Engine {
                     Some(socket) => {
                         let actual_port = socket.local_addr().map(|addr| addr.port()).unwrap_or(0);
                         if actual_port != expected_port {
-                            eprintln!(
-                                "NVST Mjolnir socket port mismatch: reserved {actual_port}, handoff expects {expected_port}; NATT keepalive determines routing"
+                            opennow_streamer_protocol::rlog!(Warn, "mjolnir_port_mismatch", "reserved={actual_port} expected={expected_port} next=natt_keepalive_decides_routing"
                             );
                         }
                         socket
                     }
                     None => {
-                        eprintln!(
-                            "NVST Mjolnir reservation missing at start; binding a fresh video UDP socket"
+                        opennow_streamer_protocol::rlog!(Warn, "mjolnir_reservation_missing", "next=bind_fresh_video_socket"
                         );
                         reserve_nvst_mjolnir_udp_socket().map_err(|bind_error| {
                             if let Some(transport) = self.nvst_transport.take() {

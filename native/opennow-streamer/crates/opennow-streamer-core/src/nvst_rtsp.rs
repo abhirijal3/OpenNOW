@@ -1215,7 +1215,7 @@ fn prepare_on_endpoint(
         ),
     );
 
-    eprintln!("{}", describe_stream_control(&describe.body));
+    opennow_streamer_protocol::rlog!(Info, "rtsp_stream_control", "{}", describe_stream_control(&describe.body));
     let announce_body = omit_server_announce_attributes(
         &build_announce(
             context,

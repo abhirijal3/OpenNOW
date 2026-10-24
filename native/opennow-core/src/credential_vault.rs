@@ -260,9 +260,7 @@ impl CredentialVault {
                 Ok(Some(session)) => {
                     if metadata.active_user_id.as_deref() != Some(user_id.as_str()) {
                         if let Err(error) = self.set_active(user_id) {
-                            eprintln!(
-                                "auth: recovered account could not be marked active: {error}"
-                            );
+                            crate::rlog::rlog!(Warn, "account_activation_failed", "error={error} next=continue");
                         }
                     }
                     return Ok(Some(session));

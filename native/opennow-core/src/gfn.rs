@@ -140,9 +140,12 @@ fn effective_provider_url_with(
     });
     match fallback {
         Some(entry) if !resolves(&host) => {
-            eprintln!(
-                "provider: {} discovery endpoint is unreachable; using fallback {}",
-                provider.code, entry.fallback_url
+            crate::rlog::rlog!(
+                Warn,
+                "provider_fallback_used",
+                "provider={} reason=discovery_unreachable fallback={}",
+                provider.code,
+                entry.fallback_url
             );
             entry.fallback_url.to_owned()
         }
@@ -409,12 +412,10 @@ impl GfnService {
         let vault = CredentialVault::new(data_dir.clone());
         match vault.migrate_legacy_electron_sessions() {
             Ok(count) if count > 0 => {
-                eprintln!(
-                    "auth: migrated {count} Electron account session(s) into the OS credential store"
-                )
+                crate::rlog::rlog!(Info, "electron_sessions_migrated", "count={count}")
             }
             Ok(_) => {}
-            Err(error) => eprintln!("auth: Electron account migration was deferred: {error}"),
+            Err(error) => crate::rlog::rlog!(Warn, "electron_migration_deferred", "error={error} next=retry_next_start"),
         }
         Self {
             cloudmatch: CloudMatchService::with_cleanup_path(
@@ -563,7 +564,7 @@ impl GfnService {
             state.attempts.clear();
             state.login_generation
         };
-        eprintln!("auth: starting device authorization");
+        crate::rlog::rlog!(Info, "device_authorization_started", "next=discover_providers");
         let discovery = self.providers()?;
         let providers = discovery["providers"]
             .as_array()
@@ -615,7 +616,7 @@ impl GfnService {
             .form(&form)
             .send()
             .map_err(|error| ServiceError::network("Device authorization failed", error))?;
-        eprintln!("auth: device authorization response {}", response.status());
+        crate::rlog::rlog!(Info, "device_authorization_answered", "status={}", response.status());
         if !response.status().is_success() {
             return Err(ServiceError::response(
                 "Device authorization failed",
@@ -638,7 +639,7 @@ impl GfnService {
             .unwrap_or(5)
             .min(3600);
         let attempt_id = random_attempt_id();
-        eprintln!("auth: prepared device authorization challenge");
+        crate::rlog::rlog!(Debug, "device_authorization_challenge_prepared", "next=wait_for_user");
         self.prune_attempts();
         crate::requests::check()?;
         let mut state = self.state.lock().expect("GFN state poisoned");
@@ -763,7 +764,7 @@ impl GfnService {
         let tokens = self
             .ensure_client_token(tokens.clone())
             .unwrap_or_else(|error| {
-                eprintln!("auth: client-token bootstrap deferred: {}", error.message);
+                crate::rlog::rlog!(Warn, "client_token_bootstrap_deferred", "error={} next=continue_without", error.message);
                 tokens
             });
         self.check_device_attempt(attempt_id)?;
@@ -915,7 +916,7 @@ impl GfnService {
                         state.session = session;
                     }
                     Err(error) => {
-                        eprintln!("auth: saved session unavailable: {error}");
+                        crate::rlog::rlog!(Warn, "saved_session_unavailable", "error={error} next=sign_in_again");
                         self.state
                             .lock()
                             .expect("GFN state poisoned")
@@ -984,8 +985,10 @@ impl GfnService {
                         && !is_definitive_auth_revocation(&error) =>
                 {
                     self.defer_refresh();
-                    eprintln!(
-                        "auth: refresh failed; using unexpired token: {}",
+                    crate::rlog::rlog!(
+                        Warn,
+                        "token_refresh_failed",
+                        "error={} next=use_unexpired_token",
                         error.message
                     );
                     (
@@ -994,7 +997,7 @@ impl GfnService {
                     )
                 }
                 Err(error) if is_definitive_auth_revocation(&error) => {
-                    eprintln!("auth: saved session was revoked: {}", error.message);
+                    crate::rlog::rlog!(Warn, "saved_session_revoked", "error={} next=sign_in_again", error.message);
                     let _ = self.vault.remove(&current.user.user_id);
                     let mut state = self.state.lock().expect("GFN state poisoned");
                     state.session = None;
@@ -1009,7 +1012,7 @@ impl GfnService {
                 }
                 Err(error) => {
                     self.defer_refresh();
-                    eprintln!("auth: expired session could not refresh: {}", error.message);
+                    crate::rlog::rlog!(Warn, "saved_session_expired", "error={} next=sign_in_again", error.message);
                     (
                         None,
                         json!({"attempted":true,"outcome":"expired","message":"Saved session expired. Sign in again if this continues."}),
@@ -1024,7 +1027,7 @@ impl GfnService {
                 ),
                 Err(error) => {
                     self.defer_refresh();
-                    eprintln!("auth: client-token bootstrap deferred: {}", error.message);
+                    crate::rlog::rlog!(Warn, "client_token_bootstrap_deferred", "error={} next=keep_session", error.message);
                     (
                         Some(current),
                         json!({"attempted":true,"outcome":"failed","message":"Session is valid; client-token refresh was deferred."}),
@@ -2274,7 +2277,7 @@ impl GfnService {
             match self.vault.save(&session) {
                 Ok(()) => self.vault.persistence_state(&session),
                 Err(error) => {
-                    eprintln!("auth: refreshed session persistence failed: {error}");
+                    crate::rlog::rlog!(Error, "session_persistence_failed", "error={error} next=keep_in_memory");
                     self.vault.failed_save_state(&session)
                 }
             }

@@ -79,3 +79,24 @@ Events: `settings.changed`, `settings.reset`, `auth.session.changed`, `session.c
 `diagnostics.snapshot` returns the bounded, redacted entry list the core records for every RPC
 (method, outcome and duration), session hand-off and streamer preparation failure. Tokens,
 URLs, e-mail addresses and local user paths are redacted. The log rotates at 5 MiB.
+
+## Stderr lines (POPSW-21)
+
+Everything the core and the streamer library print to stderr is one leveled line,
+`[rasbari:<level>] <name>: <text>`, where `<level>` is debug, info, warn or error, `<name>` is a fixed
+snake_case event name and `<text>` holds the changing facts as `key=value` pairs, ending in `next=...`
+when a failure has a fallback. On a POP the core's stderr is `core.log` and the streamer's is `v2pop.log`
+(the streamer runs inside `v2pop`), and the POP controller reads both. The JSON on stdout is not touched.
+Abhi's rules of 2026-10-24 (`rasbari-platform/docs/logging-quality.md`) decided which lines exist: an
+action or a state change (device authorization started and answered, saved session revoked, ICE state
+changed, DTLS handshake completed, data channel opened, a send failing), never one per packet or message.
+The old per-message and per-interval narration (cursor wire dumps, control and receiver statistics, NACK
+sends, first-frame hex) is now debug and only printed with `OPENNOW_NVST_TRACE=1`; the raw input packet
+bytes that used to follow "native input rx" and "encoded input tx" are gone, since keys a player types must
+never reach a log. A line printed more than 10 times in one second is printed 10 times and then replaced by
+one `<name>: repeated N more times in 1 s` line. The code is `native/opennow-core/src/rlog.rs` and
+`native/opennow-streamer/crates/opennow-streamer-protocol/src/rlog.rs` (the same format as the protocol
+repo's `v2/src/rlog.c`); a test in each fails if any other file prints to stderr by hand, and
+`native/opennow-core/tests/core_log_levels.rs` runs the core and checks every stderr line has a level.
+The streamer's counted line for a burst at the very end of a run is written by the next line after it,
+since the library has no exit hook.

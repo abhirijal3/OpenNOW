@@ -251,16 +251,23 @@ impl CloudMatchService {
             json!({"status":"not_requested"})
         };
         match network_test["status"].as_str() {
-            Some("measured") => eprintln!(
-                "Network test measured path datagram {} bytes in {} probes",
-                network_test["measuredDatagramBytes"], network_test["probes"]
-            ),
-            Some("unmeasured") => eprintln!(
-                "Network test confirmed no probe datagram in {} probes",
+            Some("measured") => crate::rlog::rlog!(
+                Info,
+                "network_test_measured",
+                "datagram_bytes={} probes={}",
+                network_test["measuredDatagramBytes"],
                 network_test["probes"]
             ),
-            Some("unavailable") => eprintln!(
-                "Network test session unavailable: {}",
+            Some("unmeasured") => crate::rlog::rlog!(
+                Info,
+                "network_test_unmeasured",
+                "probes={}",
+                network_test["probes"]
+            ),
+            Some("unavailable") => crate::rlog::rlog!(
+                Warn,
+                "network_test_unavailable",
+                "error={}",
                 network_test["error"].as_str().unwrap_or_default()
             ),
             _ => {}
@@ -469,7 +476,7 @@ impl CloudMatchService {
                         std::fs::rename(temporary, path)
                     })();
                     if saved.is_err() {
-                        eprintln!("CloudMatch could not persist pending allocation cleanup");
+                        crate::rlog::rlog!(Error, "allocation_cleanup_persist_failed", "next=report_cleanup_pending");
                     }
                 }
                 return Err(ServiceError {code:"session_cleanup_pending", message:"The cancelled cloud session could not be closed. End it before starting another game.".to_owned()});
@@ -528,7 +535,7 @@ impl CloudMatchService {
                 && let Err(error) = std::fs::remove_file(path)
                 && error.kind() != std::io::ErrorKind::NotFound
             {
-                eprintln!("CloudMatch could not remove completed allocation cleanup record");
+                crate::rlog::rlog!(Error, "allocation_cleanup_remove_failed", "next=keep_record");
                 return;
             }
             *retained = None;
@@ -1077,9 +1084,7 @@ impl CloudMatchService {
                 .send()
                 .map_err(|error| network("Session claim failed", error))?;
             let _ = read_cloudmatch_response("Session claim failed", response, true)?;
-            eprintln!(
-                "CloudMatch RESUME handover completed; awaiting fresh ready status and stream endpoints"
-            );
+            crate::rlog::rlog!(Info, "session_claim_completed", "next=await_ready_status");
         }
 
         let zone = zone_base.host_str().unwrap_or_default();

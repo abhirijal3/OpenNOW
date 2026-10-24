@@ -96,8 +96,7 @@ impl NvstCursorCapture {
                 *attempts += 1;
                 let capture_sent = send(CursorCommand::Capture(true));
                 let tracking_sent = send(CursorCommand::Tracking);
-                eprintln!(
-                    "NVST cursor feature retry: attempt={attempts} captureSent={capture_sent} trackingSent={tracking_sent}"
+                opennow_streamer_protocol::rlog!(Debug, "cursor_feature_retry", "attempt={attempts} capture_sent={capture_sent} tracking_sent={tracking_sent}"
                 );
                 *retry_at = now + RETRY_INTERVAL;
             }
@@ -108,16 +107,14 @@ impl NvstCursorCapture {
             } if now >= *retry_at => {
                 *attempts += 1;
                 let sent = send(CursorCommand::Capture(false));
-                eprintln!(
-                    "NVST cursor capture tx: command=0x0308 enabled=false reason={reason} attempt={attempts} queued={sent}"
+                opennow_streamer_protocol::rlog!(Info, "cursor_capture_disabled", "command=0x0308 reason={reason} attempt={attempts} queued={sent}"
                 );
                 if sent {
                     self.state = CaptureState::Local;
                     return true;
                 }
                 if *attempts == MAX_ATTEMPTS {
-                    eprintln!(
-                        "NVST cursor capture disable retries exhausted; retaining server-composited cursor until reactivation"
+                    opennow_streamer_protocol::rlog!(Warn, "cursor_capture_disable_exhausted", "next=keep_server_cursor_until_reactivation"
                     );
                     self.state = CaptureState::Exhausted;
                 } else {

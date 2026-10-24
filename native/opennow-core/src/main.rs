@@ -12,6 +12,7 @@ mod network_test;
 mod proxy;
 mod queue_servers;
 mod requests;
+mod rlog;
 mod settings;
 mod streamer;
 mod version;
@@ -42,9 +43,11 @@ struct AppCore {
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("opennow-core: {error}");
+        rlog::rlog!(Error, "core_failed", "error={error} next=exit");
+        rlog::flush();
         std::process::exit(1);
     }
+    rlog::flush();
 }
 
 fn run() -> Result<(), String> {
@@ -74,7 +77,7 @@ fn run() -> Result<(), String> {
             let mut output = stdout.lock();
             for value in output_rx {
                 if let Err(error) = write_json(&mut output, &value) {
-                    eprintln!("opennow-core: output failed: {error}");
+                    rlog::rlog!(Error, "output_failed", "error={error} next=stop_writing");
                     break;
                 }
             }
