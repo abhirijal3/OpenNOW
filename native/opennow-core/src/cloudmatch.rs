@@ -581,6 +581,9 @@ impl CloudMatchService {
             }
             Err(error) => return Err(error),
         };
+        if let Some(text) = session_status_text(&payload) {
+            crate::rlog::rlog!(Info, "nvidia_session_status", "{text}");
+        }
         let zone = current
             .as_ref()
             .map(|state| state.zone.clone())
@@ -2382,6 +2385,10 @@ fn delete_session(client: &Client, url: Url, headers: HeaderMap) -> Result<(), S
 
 fn validate_delete_response(context: &str, response: Response) -> Result<(), ServiceError> {
     let status = response.status();
+    let bytes = response
+        .bytes()
+        .map_err(|error| network(context, error))?;
+    crate::rlog::rlog!(Info, "nvidia_session_stop_response", "{}", stop_response_text(status.as_u16(), &bytes));
     if matches!(
         status,
         reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::NO_CONTENT
@@ -2389,9 +2396,12 @@ fn validate_delete_response(context: &str, response: Response) -> Result<(), Ser
         return Ok(());
     }
     if !status.is_success() {
-        return Err(response_error(context, response));
+        return Err(cloudmatch_http_error(
+            context,
+            status,
+            serde_json::from_slice::<Value>(&bytes).ok().as_ref(),
+        ));
     }
-    let bytes = response.bytes().map_err(|error| network(context, error))?;
     if bytes.is_empty() {
         return Ok(());
     }
@@ -2401,6 +2411,33 @@ fn validate_delete_response(context: &str, response: Response) -> Result<(), Ser
         validate_cloudmatch_response(context, status, Ok(payload), false)?;
     }
     Ok(())
+}
+
+/// The log text of CloudMatch's answer to a session stop, exactly as received: the HTTP status, the body's real length and the
+/// body itself (cut at 1000 characters, a control character shown as a space), so what GFN said while the seat was ending is
+/// never lost to a mapped error code. @rule POPCTL-7
+pub(crate) fn stop_response_text(http: u16, body: &[u8]) -> String {
+    let text: String = String::from_utf8_lossy(body)
+        .chars()
+        .take(1000)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    format!("http={http} bytes={} body={text}", body.len())
+}
+
+/// The log text of CloudMatch's session status when it says the stream is over or not running: a status other than 1, 2 and 3
+/// (paused, resuming, finished or failed) gives `status`, the session's `errorCode` and CloudMatch's `requestStatus` as JSON
+/// as received, and a running session gives nothing. The status poll is HTTP 200 whenever it gets here. @rule POPCTL-7
+pub(crate) fn session_status_text(payload: &Value) -> Option<String> {
+    let session = &payload["session"];
+    let status = value_i64(&session["status"])?;
+    if matches!(status, 1..=3) {
+        return None;
+    }
+    Some(format!(
+        "http=200 status={status} error_code={} request_status={}",
+        session["errorCode"], payload["requestStatus"]
+    ))
 }
 
 fn requests_network_test(params: &Value, settings: &Value) -> bool {
@@ -6376,5 +6413,39 @@ mod tests {
         );
         assert_eq!(created["session"]["sessionId"], "A");
         server.join().unwrap();
+    }
+    #[test]
+    fn stop_response_text_keeps_the_status_the_length_and_the_body_as_received() {
+        assert_eq!(
+            stop_response_text(200, br#"{"requestStatus":{"statusCode":1}}"#),
+            r#"http=200 bytes=34 body={"requestStatus":{"statusCode":1}}"#
+        );
+        assert_eq!(stop_response_text(404, b""), "http=404 bytes=0 body=");
+        assert_eq!(stop_response_text(500, b"a\nb\tc"), "http=500 bytes=5 body=a b c");
+        let long = vec![b'x'; 1500];
+        let text = stop_response_text(200, &long);
+        assert!(text.starts_with("http=200 bytes=1500 body=x"));
+        assert_eq!(text.len(), "http=200 bytes=1500 body=".len() + 1000);
+    }
+
+    #[test]
+    fn session_status_text_says_what_cloudmatch_reported_once_the_session_is_not_running() {
+        let finished = json!({
+            "session": {"sessionId": "S", "status": 7, "errorCode": 0},
+            "requestStatus": {"statusCode": 1, "statusDescription": "SUCCESS_STATUS"}
+        });
+        assert_eq!(
+            session_status_text(&finished).unwrap(),
+            r#"http=200 status=7 error_code=0 request_status={"statusCode":1,"statusDescription":"SUCCESS_STATUS"}"#
+        );
+        let bare = json!({"session": {"status": 7}});
+        assert_eq!(
+            session_status_text(&bare).unwrap(),
+            "http=200 status=7 error_code=null request_status=null"
+        );
+        for running in [1, 2, 3] {
+            assert!(session_status_text(&json!({"session": {"status": running}})).is_none());
+        }
+        assert!(session_status_text(&json!({})).is_none());
     }
 }

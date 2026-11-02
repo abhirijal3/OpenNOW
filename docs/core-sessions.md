@@ -89,3 +89,7 @@ to `nvst`, HDR and color taken from the accepted profile), an empty `shortcuts` 
 `surface: null`. Incomplete or unsupported accepted color is rejected before attachment, and an
 accepted HDR session needs 10-bit HEVC (4:2:0 or 4:4:4) or AV1 4:2:0 and current runtime
 capabilities.
+
+## What CloudMatch said at the end, in the log (POPCTL-7, 2026-11-02)
+
+The staging audit of 2026-11-02 found four streams that GFN ended and a `session.stop` that then answered `session_owner_mismatch` (a poll had already dropped the finished seat from the core's active list), with nothing on the POP saying what CloudMatch itself had answered. Two info lines on the core's stderr (`core.log`) now keep it as received. `nvidia_session_status: http=200 status=7 error_code=<json> request_status=<json>` is written by `session.poll` whenever CloudMatch's session status is anything but 1, 2 or 3 (paused, resuming, finished or failed), with the session's `errorCode` and CloudMatch's `requestStatus` as JSON, so a finished seat's reason is on record before the core maps it to `phase: finished`. `nvidia_session_stop_response: http=<status> bytes=<n> body=<text>` is written for every answer to the DELETE of a stop or a cleanup (the 404 and 204 that count as already gone too), with the body whole up to 1000 characters; the error a failed stop returns is built from the same bytes as before. The POP controller ships both under the `nvidia` log group. Tests: `stop_response_text` and `session_status_text` in `cloudmatch.rs`.
