@@ -13,9 +13,9 @@ changed doc gets a line here in the same turn. The protocol side's index is
 ## The library and the POP
 
 - `../native/opennow-streamer/README.md`: native runtime components and explicit clipboard-text build/test instructions; read when changing native input.
-- `protocol-integration.md`: October 19 explicit clipboard-text ABI, bounded queue and modifier ordering; how the protocol's POP builds and links `libopennow_gfn.a`, the session steps, what comes out and goes in, threads. Read for any C ABI or POP-facing change.
+- `protocol-integration.md`: November 5 bounded Linux receive batching, timer/ownership behavior, counters and rollback; October 19 explicit clipboard-text ABI, bounded queue and modifier ordering; how the protocol's POP builds and links `libopennow_gfn.a`, the session steps, what comes out and goes in, threads. Read for any C ABI or POP-facing change.
 - `integration-input-timing-mic.md`: timed input, microphone, player feedback and control, timing and profile calls, raw audio and control taps, key export. Read when touching those C calls.
-- `integration-measured.md`: library CPU, memory and stream rates from the first live run (2026-10-08). Read when judging cost per session.
+- `integration-measured.md`: November 5 correction with full-process RSS/PSS, receive-thread CPU and missing helper/kernel accounting; historical October 8 low-rate library measurements. Read before quoting per-session CPU or memory.
 - `integration-open-work.md`: what is still open on the library and POP side and the open decisions. Read before planning the next step.
 - `same-seat-handover.md`: the live driver `tools/run_live_session.py` and reclaiming an official-client seat. Read when running or changing a live session.
 

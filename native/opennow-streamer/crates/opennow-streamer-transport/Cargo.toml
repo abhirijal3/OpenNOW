@@ -44,3 +44,6 @@ sony-peer-probe = []
 name = "nvst-peer-probe"
 path = "src/bin/nvst_peer_probe.rs"
 required-features = ["sony-peer-probe"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

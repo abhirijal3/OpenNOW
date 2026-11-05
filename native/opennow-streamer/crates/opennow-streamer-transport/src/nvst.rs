@@ -6825,6 +6825,7 @@ fn run_nvst_webrtc_bundle(
     let mut receiver = NvstVideoReceiver::new(config);
     let mut video_delivery_gap = false;
     let mut datagram = vec![0_u8; 65_536];
+    let mut datagrams = crate::udp_receive::UdpReceive::new(datagram.len(), "bundle", local_port);
     let mut inbound_datagrams = 0_u64;
     let mut outbound_datagrams = 0_u64;
     let mut hole_punch_pings = 0_u64;
@@ -7712,7 +7713,7 @@ fn run_nvst_webrtc_bundle(
                 }
                 applied_wait = Some(wait);
             }
-            match socket.recv_from(&mut datagram) {
+            match datagrams.recv_from(&socket, &mut datagram) {
                 Ok((0, _)) => continue,
                 Ok((length, source)) => {
                     inbound_datagrams += 1;
@@ -7876,6 +7877,7 @@ fn run_nvst_udp_receiver(
     let stun_credentials = receiver.config.stun_credentials.clone();
     let header_only = receiver.config.header_only;
     let mut datagram = vec![0_u8; receive_buffer_len(&receiver.config)];
+    let mut datagrams = crate::udp_receive::UdpReceive::new(datagram.len(), "video", local_port);
     let mut peer_seen = false;
     let mut last_ping = Instant::now() - PING_INTERVAL_BEFORE_CONNECTION;
     let mut pings_sent = 0_u64;
@@ -7965,7 +7967,7 @@ fn run_nvst_udp_receiver(
             last_ping = now;
         }
 
-        match socket.recv_from(&mut datagram) {
+        match datagrams.recv_from(&socket, &mut datagram) {
             Ok((length, source)) => 'datagram: {
                 inbound_datagrams += 1;
                 if inbound_datagrams == 1 {
